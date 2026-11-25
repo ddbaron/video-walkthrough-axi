@@ -30,7 +30,7 @@ OCR_SETTINGS = {"page_segmentation": 11, "language": "eng"}
 
 def fingerprint(path: Path, signatures: dict) -> str:
     resolved = path.resolve()
-    entries = {path.parent, path, resolved.parent, resolved}
+    entries = {resolved, *resolved.parents}
     pending = [path.absolute()]
     visited = set()
     while pending:
@@ -39,8 +39,8 @@ def fingerprint(path: Path, signatures: dict) -> str:
             if entry in visited:
                 continue
             visited.add(entry)
+            entries.add(entry)
             if entry.is_symlink():
-                entries.update((entry, entry.parent))
                 pending.append(entry.parent / entry.readlink())
     for entry in entries:
         signatures[entry] = device_signature(entry, follow_symlinks=False)
@@ -123,7 +123,8 @@ def audio_pcm(source: Path, media: dict, wav: Path) -> np.ndarray:
             "-ac",
             "1",
             "-af",
-            f"asetpts=PTS-({origin})/TB,aresample={rate}:async=1:first_pts=0",
+            f"asetpts=PTS-({origin})/TB,aresample={rate}:async=1:"
+            "min_comp=0:min_hard_comp=0:first_pts=0",
             "-c:a",
             "pcm_s16le",
             str(wav),

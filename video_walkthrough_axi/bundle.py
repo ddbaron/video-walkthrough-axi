@@ -158,22 +158,6 @@ def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
     signature = device_signature(source)
     sha = digest(source)
     media = probe(source)
-    settings, evidence_backends, signatures = backend_config(media, model, ocr)
-    config = {
-        "schema_version": SCHEMA_VERSION,
-        "generator_version": __version__,
-        "settings": {**settings, "detector": SETTINGS},
-        "backends": {
-            **evidence_backends,
-            "ffmpeg": run(["ffmpeg", "-version"]).splitlines()[0],
-            "ffprobe": run(["ffprobe", "-version"]).splitlines()[0],
-            "pyav": av.__version__,
-            "libav": {k: ".".join(map(str, v)) for k, v in av.library_versions.items()},
-            "pillow": version("Pillow"),
-            "numpy": version("numpy"),
-        },
-    }
-    cache_key = hashlib.sha256(json.dumps([sha, config], sort_keys=True).encode()).hexdigest()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     evidence = local_artifact(root, "evidence")
     evidence.mkdir(mode=0o700, exist_ok=True)
@@ -181,6 +165,22 @@ def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if (root / "manifest.json").exists():
             read_manifest(root)
+        settings, evidence_backends, signatures = backend_config(media, model, ocr)
+        config = {
+            "schema_version": SCHEMA_VERSION,
+            "generator_version": __version__,
+            "settings": {**settings, "detector": SETTINGS},
+            "backends": {
+                **evidence_backends,
+                "ffmpeg": run(["ffmpeg", "-version"]).splitlines()[0],
+                "ffprobe": run(["ffprobe", "-version"]).splitlines()[0],
+                "pyav": av.__version__,
+                "libav": {k: ".".join(map(str, v)) for k, v in av.library_versions.items()},
+                "pillow": version("Pillow"),
+                "numpy": version("numpy"),
+            },
+        }
+        cache_key = hashlib.sha256(json.dumps([sha, config], sort_keys=True).encode()).hexdigest()
         manifest = cached_manifest(root, evidence, cache_key)
         cache_hit = manifest is not None
         source_info = {"path": str(source), "sha256": sha, "bytes": signature[2]}

@@ -60,6 +60,9 @@ def screen(state: str) -> Image.Image:
         draw.rounded_rectangle((44, 240, 420, 308), 6, fill="#ffe4a2")
         draw.text((61, 247), "Warning", font=bold, fill="#271301")
         draw.text((61, 275), "Supervisor approval required", font=bold, fill="#271301")
+    elif state == "brief-warning":
+        draw.rectangle((44, 240, 235, 299), fill="#ffe4a2")
+        words(56, 254, "Approval required")
     elif state == "single-frame":
         draw.rounded_rectangle((482, 184, 582, 221), 6, fill="#203449")
         words(490, 193, "Price held", "#ffffff")

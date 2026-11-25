@@ -1,28 +1,22 @@
-"""Select stable screens and short-lived states from native pixels."""
+"""Select distinct screens from native pixels."""
 
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from math import floor
 
 import numpy as np
 
 from .media import Sample
 
+SCREENSHOTS_PER_SECOND = 3
 SETTINGS = {
     "sampling": "all-decoded-frames",
     "grid_columns": 16,
     "grid_rows": 12,
     "changed_rgb_channel": 15,
-    "settled_global": 0.007,
-    "settled_tile": 0.085,
-    "local_global_floor": 0.00025,
-    "local_tile": 0.032,
-    "stability_global": 0.0025,
-    "impulse_global": 0.0035,
-    "impulse_tile": 0.12,
-    "impulse_motion_ceiling": 0.035,
-    "short_dwell": 0.065,
-    "settled_dwell": 0.55,
-    "motion_timeout": 3.0,
+    "changed_global_fraction": 0.007,
+    "changed_tile_fraction": 0.032,
+    "screenshots_per_second": SCREENSHOTS_PER_SECOND,
 }
 
 
@@ -43,33 +37,16 @@ class TileGrid:
         changed = np.any(delta >= SETTINGS["changed_rgb_channel"], axis=2)
         total = int(np.count_nonzero(changed))
         fraction = total / changed.size
-        if fraction < SETTINGS["local_global_floor"]:
-            return fraction, 0.0
         columns = np.add.reduceat(changed, self.columns, axis=1, dtype=np.int32)
         tiles = np.add.reduceat(columns, self.rows, axis=0, dtype=np.int32)
         return fraction, float((tiles / self.areas).max())
 
 
-def strong(score: tuple[float, float]) -> bool:
-    return score[0] >= SETTINGS["settled_global"] or score[1] >= SETTINGS["settled_tile"]
-
-
-def meaningful(score: tuple[float, float]) -> bool:
-    return strong(score) or (
-        score[0] >= SETTINGS["local_global_floor"] and score[1] >= SETTINGS["local_tile"]
+def distinct(score: tuple[float, float]) -> bool:
+    return (
+        score[0] >= SETTINGS["changed_global_fraction"]
+        or score[1] >= SETTINGS["changed_tile_fraction"]
     )
-
-
-def similar(score: tuple[float, float]) -> bool:
-    return score[0] < SETTINGS["stability_global"] and not meaningful(score)
-
-
-@dataclass
-class Candidate:
-    sample: Sample
-    pixels: np.ndarray
-    score: tuple[float, float]
-    last: Sample
 
 
 @dataclass
@@ -98,41 +75,7 @@ class Selection:
         }
 
 
-def ending_brief(
-    candidate: Candidate | None, reason: str, until: float | None = None
-) -> Selection | None:
-    if candidate is None:
-        return None
-    observed_end = candidate.last.end if until is None else until
-    global_delta, tile_delta = candidate.score
-    localized = global_delta <= SETTINGS["impulse_motion_ceiling"]
-    confirmed = observed_end - candidate.sample.time >= SETTINGS["short_dwell"] - 1e-8 and (
-        localized or candidate.last.time > candidate.sample.time
-    )
-    impulse = localized and (
-        global_delta >= SETTINGS["impulse_global"] or tile_delta >= SETTINGS["impulse_tile"]
-    )
-    if not (confirmed or impulse):
-        if until is None:
-            return Selection(
-                candidate.sample,
-                "end-of-video",
-                candidate.sample.time,
-                candidate.score,
-                ("unconfirmed-screen",),
-            )
-        return None
-    return Selection(
-        candidate.sample,
-        reason,
-        candidate.sample.time,
-        candidate.score,
-        ("brief-state",) if confirmed else ("brief-state", "limited-dwell"),
-        candidate.last.time,
-    )
-
-
-def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
+def screen_changes(samples: Iterable[Sample]) -> Iterator[Selection]:
     iterator = iter(samples)
     first = next(iterator, None)
     if first is None:
@@ -141,68 +84,59 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
     grid = TileGrid(reference.shape[:2])
     yield Selection(first, "opening", first.time, (0, 0))
 
-    candidate = None
-    motion_since = None
+    previous = None
+    start = last = first
+    score = (0.0, 0.0)
+    reason = "opening"
     for sample in iterator:
         pixels = sample.frame.to_ndarray(format="rgb24")
+        difference = grid.difference(pixels, reference)
+        if not distinct(difference):
+            last = sample
+            continue
+
+        if start is not first:
+            yield screen_selection(start, last, reason, score)
         if pixels.shape != reference.shape:
-            if selection := ending_brief(candidate, "short-transition", sample.time):
-                yield selection
-            yield Selection(sample, "resolution-change", sample.time, (1, 1))
-            reference, grid = pixels, TileGrid(pixels.shape[:2])
-            candidate, motion_since = None, None
-            continue
-
-        score = grid.difference(pixels, reference)
-        if not meaningful(score):
-            if candidate is not None and (
-                selection := ending_brief(candidate, "short-return", sample.time)
-            ):
-                yield selection
-                score = grid.difference(pixels, candidate.pixels)
-                yield Selection(sample, "reverted", sample.time, score)
-                reference = pixels
-            candidate, motion_since = None, None
-            continue
-
-        if motion_since is None:
-            motion_since = sample.time
-        if candidate is None:
-            candidate = Candidate(sample, pixels, score, sample)
-        elif similar(next_score := grid.difference(pixels, candidate.pixels)):
-            candidate.last = sample
+            reason = "resolution-change"
+            grid = TileGrid(pixels.shape[:2])
+        elif previous is not None and not distinct(grid.difference(pixels, previous)):
+            reason = "reverted"
         else:
-            if selection := ending_brief(candidate, "short-transition", sample.time):
-                yield selection
-                reference = candidate.pixels
-                score = next_score
-                motion_since = sample.time
-                if not meaningful(score):
-                    candidate, motion_since = None, None
-                    continue
-            candidate = Candidate(sample, pixels, score, sample)
+            reason = "screen-change"
+        previous, reference = reference, pixels
+        start = last = sample
+        score = difference
 
-        if sample.time - candidate.sample.time >= SETTINGS["settled_dwell"] - 1e-8:
-            reason = "settled" if strong(candidate.score) else "localized"
-            yield Selection(
-                sample,
-                reason,
-                candidate.sample.time,
-                score,
-                last_observed=sample.time,
-            )
-        elif sample.time - motion_since >= SETTINGS["motion_timeout"]:
-            yield Selection(
-                sample,
-                "extended-motion",
-                motion_since,
-                score,
-                ("unsettled-screen",),
-            )
+    if start is not first:
+        yield screen_selection(start, last, reason, score)
+
+
+def screen_selection(
+    start: Sample, last: Sample, reason: str, score: tuple[float, float]
+) -> Selection:
+    capture = start if reason in {"reverted", "resolution-change"} else last
+    flags = ("single-frame",) if start is last else ()
+    return Selection(capture, reason, start.time, score, flags, last.time)
+
+
+def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
+    second = None
+    selected: list[Selection] = []
+    for screen in screen_changes(samples):
+        capture_second = floor(screen.sample.time)
+        if capture_second != second:
+            yield from selected
+            selected = []
+            second = capture_second
+        if len(selected) < SCREENSHOTS_PER_SECOND:
+            selected.append(screen)
         else:
-            continue
-        reference = pixels
-        candidate, motion_since = None, None
-
-    if selection := ending_brief(candidate, "short-at-end"):
-        yield selection
+            first_change = selected[1] if selected[0].reason == "opening" else selected[0]
+            selected[-1] = replace(
+                screen,
+                reason="extended-motion",
+                onset=first_change.onset,
+                flags=(*screen.flags, "unsettled-screen"),
+            )
+    yield from selected

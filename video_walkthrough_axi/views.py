@@ -60,7 +60,7 @@ def inspect_window(root: Path, begin: float, end: float, limit: int, cursor: str
     timeline = load_timeline(root, manifest)
     context = None
     window = []
-    for event in sorted(timeline, key=event_time):
+    for event in timeline:
         time = event_time(event)
         if time > end:
             break

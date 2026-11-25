@@ -37,7 +37,7 @@ video-walkthrough-axi frame "$bundle" --at 00:15.250 --crop 400,160,240,90
 video-walkthrough-axi walkthrough "$bundle" > "$bundle/walkthrough.md"
 ```
 
-- **`prepare FILE --out DIR`** scans decoded frames at native resolution, combining a tile and dwell detector with a pass for short screen states. It builds a private evidence bundle, detects the speech language automatically when an audio stream is present, and publishes the manifest after validating the artifacts. `--ocr auto` uses Tesseract if available. Use `--ocr off` to skip it. An existing bundle can reuse evidence keyed by source SHA-256, settings, and backend and model versions.
+- **`prepare FILE --out DIR`** scans decoded frames at native resolution and merges near-identical screens using a color difference threshold. It builds a private evidence bundle, detects the speech language automatically when an audio stream is present, and publishes the manifest after validating the artifacts. `--ocr auto` uses Tesseract if available. Use `--ocr off` to skip it. An existing bundle can reuse evidence keyed by source SHA-256, settings, and backend and model versions.
 - **`inspect BUNDLE --from TIME --to TIME`** returns events in recording order with the preceding screenshot, where available. Frame events enter the window at `change_start` and report the actual PNG timestamp as `time`. For extended-motion frames, `change_start` records when the motion began, and `time` determines window placement, screen context, and speech attribution. Speech and OCR have separate previews. Follow `next_cursor` with `--cursor` and the same window. The default limit is 20 events, with a maximum of 100 per page. Previews are capped at 500 characters per evidence field. Open the recorded timeline path for full text and OCR word boxes.
 - **`frame BUNDLE --at TIME`** checks the source SHA-256 and saves a native PNG under `BUNDLE/extracts/`. The result includes the actual presentation timestamp, source PTS and time base, and whether the chosen frame was exact or nearest. For `--crop X,Y,W,H`, use source pixel coordinates from the upper left before any player rotation or scaling.
 - **`walkthrough BUNDLE`** prints ordered Markdown steps with screenshot links, speech, and on-screen text. Save the Markdown in the bundle directory so its relative image links resolve.
@@ -52,7 +52,7 @@ Once dependencies and the model are installed, all four commands run offline wit
 
 Bundles, terminal output, crops and derived drafts may contain private material. Keep them with the recording and use a private destination when redirecting CLI output. Prior generations remain in the bundle so earlier screenshot links and cache entries remain usable.
 
-Detection depends on visible pixel changes, so a brief cursor or scroll intermediate may be selected and subtle changes may be missed. A `limited-dwell` flag marks especially brief evidence. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
+Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. Prepare saves at most three screenshots per recording second. When more changes occur in a second, the last screenshot shows the latest change, with the `extended-motion` reason and an `unsettled-screen` flag. Its change start records the first selected change in that second. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
 
 ## Acceptance checks
 
