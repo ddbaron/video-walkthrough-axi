@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import os
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -17,8 +18,8 @@ class EvidenceError(Exception):
     """A user-facing processing error."""
 
 
-def device_signature(path: Path) -> tuple:
-    info = path.stat()
+def device_signature(path: Path | int) -> tuple:
+    info = os.stat(path)
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 

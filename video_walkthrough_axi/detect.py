@@ -10,6 +10,7 @@ import numpy as np
 from .media import Sample
 
 SCREENSHOTS_PER_SECOND = 3
+MOTION_PAUSE_SECONDS = 0.5
 SETTINGS = {
     "sampling": "all-decoded-frames",
     "grid_columns": 16,
@@ -17,8 +18,9 @@ SETTINGS = {
     "changed_rgb_channel": 15,
     "changed_global_fraction": 0.007,
     "changed_tile_fraction": 0.032,
-    "comparison": "adjacent-frames",
+    "comparison": "adjacent-and-screen",
     "screenshots_per_second": SCREENSHOTS_PER_SECOND,
+    "motion_pause_seconds": MOTION_PAUSE_SECONDS,
 }
 
 
@@ -60,6 +62,7 @@ class Selection:
     flags: tuple[str, ...] = ()
     excursion: bool = False
     between_changes: bool = False
+    motion_start: float | None = None
 
     def record(self) -> dict:
         frame = self.sample.frame
@@ -87,36 +90,58 @@ def screen_changes(samples: Iterable[Sample]) -> Iterator[Selection]:
     yield Selection(first, "opening", first.time, (0, 0))
 
     previous_run = None
+    anchor = pixels
     start = last = first
     score = (0.0, 0.0)
     reason = "opening"
+    motion_start = first.time
+    starts_after_change = False
     for sample in iterator:
         incoming = sample.frame.to_ndarray(format="rgb24")
         difference = grid.difference(incoming, pixels)
-        if not distinct(difference):
-            last, pixels = sample, incoming
-            continue
+        adjacent_change = distinct(difference)
+        if not adjacent_change:
+            difference = grid.difference(incoming, anchor)
+            if not distinct(difference):
+                last, pixels = sample, incoming
+                continue
 
+        excursion = False
         if start is not first:
             excursion = (
                 start is last
+                and starts_after_change
+                and adjacent_change
                 and previous_run.shape == incoming.shape == pixels.shape
                 and not distinct(grid.difference(incoming, previous_run))
             )
-            yield screen_selection(start, last, reason, score, excursion, has_successor=True)
+            yield screen_selection(
+                start,
+                last,
+                reason,
+                score,
+                excursion,
+                motion_start,
+                between_changes=starts_after_change and adjacent_change,
+            )
+        if start is first or excursion or last.time >= start.time + MOTION_PAUSE_SECONDS:
+            motion_start = sample.time
         if incoming.shape != pixels.shape:
             reason = "resolution-change"
             grid = TileGrid(incoming.shape[:2])
+            motion_start = sample.time
         elif previous_run is not None and not distinct(grid.difference(incoming, previous_run)):
             reason = "reverted"
         else:
             reason = "screen-change"
         previous_run, pixels = pixels, incoming
+        anchor = incoming
         start = last = sample
+        starts_after_change = adjacent_change
         score = difference
 
     if start is not first:
-        yield screen_selection(start, last, reason, score, False, has_successor=False)
+        yield screen_selection(start, last, reason, score, False, motion_start)
 
 
 def screen_selection(
@@ -125,20 +150,23 @@ def screen_selection(
     reason: str,
     score: tuple[float, float],
     excursion: bool,
+    motion_start: float,
     *,
-    has_successor: bool,
+    between_changes: bool = False,
 ) -> Selection:
     capture = start if reason in {"reverted", "resolution-change"} else last
     single = start is last
     flags = ("single-frame",) if single else ()
-    return Selection(capture, reason, start.time, score, flags, excursion, has_successor and single)
+    return Selection(
+        capture, reason, start.time, score, flags, excursion, between_changes and single, motion_start
+    )
 
 
 def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
-    previous_second = None
+    motion_run = None
     motion_start = None
     by_second = groupby(screen_changes(samples), key=lambda screen: floor(screen.sample.time))
-    for second, bucket in by_second:
+    for _, bucket in by_second:
         screens = list(bucket)
         changes = [screen for screen in screens if screen.reason != "opening"]
         uninterrupted = len(changes) > SCREENSHOTS_PER_SECOND and all(
@@ -155,10 +183,11 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
                 protected.append((index, screen))
             else:
                 motion.append((index, screen))
+                if screen.motion_start != motion_run:
+                    motion_run = screen.motion_start
+                    motion_start = screen.onset
         remaining = SCREENSHOTS_PER_SECOND - len(protected)
         if len(motion) > max(remaining, 0):
-            if motion_start is None or previous_second != second - 1:
-                motion_start = changes[0].onset
             if remaining > 0:
                 protected.extend(motion[: remaining - 1])
                 index, latest = motion[-1]
@@ -168,14 +197,12 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
                         replace(
                             latest,
                             reason="extended-motion",
-                            onset=motion_start,
+                            onset=latest.onset if motion_start is None else motion_start,
                             flags=(*latest.flags, "unsettled-screen"),
                         ),
                     )
                 )
         else:
             protected.extend(motion)
-            motion_start = None
         for _, screen in sorted(protected):
             yield screen
-        previous_second = second

@@ -1,6 +1,5 @@
 """Generate a small fictional settings workflow, with optional macOS narration."""
 
-import argparse
 import subprocess
 import tempfile
 from pathlib import Path
@@ -175,11 +174,3 @@ def make_recording(output: Path, narration: bool = False) -> None:
                 ],
                 check=True,
             )
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("output", type=Path)
-    parser.add_argument("--narration", action="store_true", help="use the macOS say command")
-    args = parser.parse_args()
-    make_recording(args.output.resolve(), args.narration)

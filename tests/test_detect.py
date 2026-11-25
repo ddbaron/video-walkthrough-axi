@@ -1,7 +1,7 @@
 import av
 import pytest
 from demo_recording import FPS, screen
-from PIL import ImageDraw
+from PIL import Image, ImageDraw
 
 from video_walkthrough_axi.detect import select_frames
 from video_walkthrough_axi.media import Sample
@@ -91,3 +91,31 @@ def test_warning_survives_full_screenshot_bucket():
     states = ("baseline", "dropdown", "brief-warning", "baseline")
     samples = [screen_sample(index / 10, state) for index, state in enumerate(states)]
     assert [screen.sample.time for screen in select_frames(samples)] == [0, 0.1, 0.2]
+
+
+@pytest.mark.parametrize("returns", [False, True])
+def test_gradual_color_change_reaches_held_screen(returns):
+    shades = [100, 110, 120, 130, 130]
+    if returns:
+        shades.append(100)
+    samples = []
+    for index, shade in enumerate(shades):
+        image = screen("baseline")
+        ImageDraw.Draw(image).rectangle((320, 180, 399, 239), fill=(shade, shade, shade))
+        samples.append(Sample(index / 10, av.VideoFrame.from_image(image)))
+
+    assert any(selection.sample is samples[4] for selection in select_frames(samples))
+
+
+def test_motion_onset_resets_after_held_screen():
+    opening = Image.new("RGB", (64, 48), "white")
+    samples = [Sample(0, av.VideoFrame.from_image(opening))]
+    for tick, shade in enumerate(
+        (0, 0, 40, 40, 80, 80, 120, 160, 160, 160, 160, 160, 160, 200, 200, 0, 0, 40, 40, 80),
+        start=10,
+    ):
+        image = Image.new("RGB", (64, 48), (shade,) * 3)
+        samples.append(Sample(tick / 10, av.VideoFrame.from_image(image)))
+    motion = [change for change in select_frames(samples) if change.reason == "extended-motion"]
+    assert [change.onset for change in motion] == [1.0, 2.3]
+    assert motion[-1].sample.time == 2.9

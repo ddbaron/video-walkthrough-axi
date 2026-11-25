@@ -5,7 +5,9 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import tempfile
+from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
 
@@ -44,6 +46,17 @@ def read_manifest(root: Path) -> dict:
 def ensure_unchanged(path: Path, signature: tuple) -> None:
     if device_signature(path) != signature:
         raise EvidenceError("The source changed during processing. Retry with a stable file.")
+
+
+@contextmanager
+def source_snapshot(source: Path, root: Path):
+    with tempfile.TemporaryDirectory(prefix=".source-", dir=root) as temporary:
+        snapshot = Path(temporary) / f"recording{source.suffix}"
+        with source.open("rb") as original, snapshot.open("wb") as copy:
+            signature = device_signature(original.fileno())
+            shutil.copyfileobj(original, copy)
+        ensure_unchanged(source, signature)
+        yield snapshot, digest(snapshot), signature
 
 
 def activate(root: Path, manifest: dict) -> None:
@@ -155,16 +168,17 @@ def build(staging: Path, name: str, source: Path, manifest: dict, backend_dir: P
 def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
     if not source.is_file():
         raise EvidenceError("Provide a regular, local recording file.")
-    signature = device_signature(source)
-    sha = digest(source)
-    media = probe(source)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     evidence = local_artifact(root, "evidence")
     evidence.mkdir(mode=0o700, exist_ok=True)
-    with local_artifact(root, ".prepare.lock").open("a") as lock:
+    with (
+        source_snapshot(source, root) as (recording, sha, signature),
+        local_artifact(root, ".prepare.lock").open("a") as lock,
+    ):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if (root / "manifest.json").exists():
             read_manifest(root)
+        media = probe(recording)
         settings, evidence_backends, inputs = backend_config(media, model, ocr)
         config = {
             "schema_version": SCHEMA_VERSION,
@@ -198,7 +212,7 @@ def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
                 name = f"{cache_key}-{staging.name.removeprefix('.stage-')}"
                 with tempfile.TemporaryDirectory(prefix=".backend-", dir=staging) as backend:
                     snapshot_inputs(Path(backend), inputs)
-                    build(staging, name, source, manifest, Path(backend))
+                    build(staging, name, recording, manifest, Path(backend))
                 if backend_config(media, model, ocr) != (settings, evidence_backends, inputs):
                     raise EvidenceError("Speech or OCR backend inputs changed during processing.")
                 ensure_unchanged(source, signature)
@@ -220,11 +234,11 @@ def extract_frame(root: Path, at: float, crop: tuple | None) -> dict:
     source = Path(manifest["source"]["path"])
     if not source.is_absolute() or not source.is_file():
         raise EvidenceError("Source is unavailable. Rerun prepare with its current path.")
-    signature = device_signature(source)
-    if digest(source) != manifest["source"]["sha256"]:
-        raise EvidenceError("Source SHA-256 differs from the recording used to build this bundle.")
-    sample = pick_frame(source, manifest["media"], at)
-    ensure_unchanged(source, signature)
+    with source_snapshot(source, root) as (recording, sha, signature):
+        if sha != manifest["source"]["sha256"]:
+            raise EvidenceError("Source SHA-256 differs from the recording used to build this bundle.")
+        sample = pick_frame(recording, manifest["media"], at)
+        ensure_unchanged(source, signature)
     output = local_artifact(root, "extracts")
     output.mkdir(mode=0o700, exist_ok=True)
     fd, filename = tempfile.mkstemp(dir=output, prefix="frame-", suffix=".png")

@@ -48,14 +48,14 @@ Times accept seconds, `MM:SS`, or `HH:MM:SS`, including fractional seconds. Comm
 
 Once dependencies and the model are installed, all four commands run offline without credentials. The tool loads the specified model from disk and opens the recording with local file protocols. OCR runs locally. The original video stays at its source path.
 
+Prepare and frame use a temporary private copy of the recording inside the bundle so the bytes they read match the verified hash. Allow enough space for that copy while either command runs.
+
 `manifest.json` identifies schema version 1, the source path and SHA-256, stream offsets, backend versions, model fingerprints, settings, and selection reasons. Referenced generations under `evidence/` contain the native PNGs, `transcript.json`, and `timeline.json`. The transcript stores words and their timestamps. The timeline keeps speech and frame events distinct and includes OCR words, confidence scores, and pixel boxes when available. Bundle times are relative to the recording origin, with that origin and the selected streams documented in the manifest.
 
 Bundles, terminal output, crops and derived drafts may contain private material. Keep them with the recording and use a private destination when redirecting CLI output. Prior generations remain in the bundle so earlier screenshot links and cache entries remain usable.
 
-Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. Prepare limits sustained motion to three screenshots per recording second and gives brief excursions priority. When motion is thinned, the latest retained motion screenshot carries the `extended-motion` reason and an `unsettled-screen` flag. Its change start is carried across consecutive seconds of thinned motion. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
+Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. Prepare limits sustained motion to three screenshots per recording second and gives brief excursions priority. When motion is thinned, the latest retained motion screenshot carries the `extended-motion` reason and an `unsettled-screen` flag. Its change start follows the observed motion across seconds and resets after a held screen. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
 
 ## Acceptance checks
 
-With FFmpeg on `PATH`, install the development tools with `python -m pip install -e '.[dev]'` and run `./acceptance.sh`. The tests generate a fictional software demo with a dropdown, a brief confirmation, a warning, and dollar amounts. OCR checks run when Tesseract and English language data are installed. To include the macOS `say` narration and quiet speech check, install the `mlx` extra and set `VIDEO_WALKTHROUGH_TEST_MODEL` to a local model directory before running the checks.
-
-Generate the narrated fixture separately with `python tests/demo_recording.py /tmp/workshop-demo.mp4 --narration`. The generator can also produce a silent fixture when invoked without `--narration`.
+With FFmpeg on `PATH`, install the development tools with `python -m pip install -e '.[dev]'` and run `python -m pytest`. The tests generate a fictional software demo with a dropdown, a brief confirmation, a warning, and dollar amounts. OCR checks run when Tesseract and English language data are installed. To include the macOS `say` narration and quiet speech check, install the `mlx` extra and set `VIDEO_WALKTHROUGH_TEST_MODEL` to a local model directory before running the checks.

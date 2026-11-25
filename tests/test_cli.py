@@ -131,6 +131,49 @@ def test_cache_checks_artifacts_and_source_identity(demo, tmp_path):
     assert "SHA-256 differs" in toon("frame", bundle, "--at", 0, code=1)["error"]
 
 
+@pytest.mark.parametrize("command", ["prepare", "frame"])
+def test_source_directory_rollback_keeps_verified_recording(demo, tmp_path, monkeypatch, command):
+    original, expected_bundle = demo
+    active = tmp_path / "active"
+    alternate = tmp_path / "alternate"
+    saved = tmp_path / "saved"
+    active.mkdir()
+    alternate.mkdir()
+    source = active / "input.mp4"
+    shutil.copyfile(original, source)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(original), "-vf", "negate", str(alternate / source.name)],
+        check=True,
+    )
+    bundle = tmp_path / "bundle"
+    expected = expected_bundle / manifest_of(expected_bundle)["frames"][0]["path"]
+    operation = "build" if command == "prepare" else "pick_frame"
+    consume = getattr(bundles, operation)
+
+    def swap_while_reading(*args):
+        active.rename(saved)
+        alternate.rename(active)
+        try:
+            return consume(*args)
+        finally:
+            active.rename(alternate)
+            saved.rename(active)
+
+    if command == "frame":
+        bundles.prepare(source, bundle, None, "off")
+    monkeypatch.setattr(bundles, operation, swap_while_reading)
+    if command == "prepare":
+        bundles.prepare(source, bundle, None, "off")
+        manifest = manifest_of(bundle)
+        assert manifest["source"]["sha256"] == hashlib.sha256(original.read_bytes()).hexdigest()
+        actual = bundle / manifest["frames"][0]["path"]
+    else:
+        actual = bundles.extract_frame(bundle, 0, None)["path"]
+    with Image.open(actual) as screenshot, Image.open(expected) as reference:
+        assert screenshot.tobytes() == reference.tobytes()
+    assert not list(bundle.glob(".source-*"))
+
+
 def test_readers_reject_replaced_evidence(demo, tmp_path):
     _, original = demo
     bundle = tmp_path / "bundle"
