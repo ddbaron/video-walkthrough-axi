@@ -22,6 +22,7 @@ from demo_recording import (
 from PIL import Image, ImageChops, ImageStat
 
 from video_walkthrough_axi import bundle as bundles
+from video_walkthrough_axi import evidence
 from video_walkthrough_axi.media import Sample
 
 
@@ -160,6 +161,8 @@ def test_source_directory_rollback_keeps_verified_recording(demo, tmp_path, monk
     consume = getattr(bundles, operation)
 
     def swap_while_reading(*args):
+        recording = args[2] if command == "prepare" else args[0]
+        assert not recording.resolve().is_relative_to(bundle.resolve())
         active.rename(saved)
         alternate.rename(active)
         try:
@@ -180,7 +183,6 @@ def test_source_directory_rollback_keeps_verified_recording(demo, tmp_path, monk
         actual = bundles.extract_frame(bundle, 0, None)["path"]
     with Image.open(actual) as screenshot, Image.open(expected) as reference:
         assert screenshot.tobytes() == reference.tobytes()
-    assert not list(bundle.glob(".source-*"))
 
 
 def test_readers_reject_replaced_evidence(demo, tmp_path):
@@ -331,12 +333,9 @@ def test_frame_crops_and_nearest_timestamp(demo):
 
 
 def test_ocr_amount_and_warning(demo, tmp_path):
-    tesseract = shutil.which("tesseract")
-    if tesseract is None:
+    traineddata = evidence.tesseract_language_file()
+    if traineddata is None or not traineddata.is_file():
         pytest.skip("requires Tesseract with English language data")
-    languages = subprocess.run([tesseract, "--list-langs"], capture_output=True, text=True)
-    if "eng" not in languages.stdout.splitlines()[1:]:
-        pytest.skip("requires Tesseract English language data")
     source, _ = demo
     bundle = tmp_path / "ocr"
     assert not toon("prepare", source, "--out", bundle, "--ocr", "off")["cache_hit"]

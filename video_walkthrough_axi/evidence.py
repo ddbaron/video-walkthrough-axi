@@ -88,7 +88,7 @@ def backend_config(
         }
     if ocr == "auto" and shutil.which("tesseract"):
         traineddata = tesseract_language_file()
-        if traineddata.is_file():
+        if traineddata is not None and traineddata.is_file():
             settings["ocr"] = OCR_SETTINGS
             backends["ocr"] = {
                 "name": "tesseract",
@@ -99,10 +99,13 @@ def backend_config(
     return settings, backends, inputs
 
 
-def tesseract_language_file() -> Path:
-    output = run(["tesseract", "--list-langs"]).splitlines()
+def tesseract_language_file() -> Path | None:
+    try:
+        output = run(["tesseract", "--list-langs"]).splitlines()
+    except EvidenceError:
+        return None
     if not output or '"' not in output[0]:
-        raise EvidenceError("Tesseract did not report its language data directory.")
+        return None
     directory = Path(output[0].split('"')[1])
     language = OCR_SETTINGS["language"]
     return directory / f"{language}.traineddata"

@@ -92,6 +92,27 @@ def test_prepare_binds_ocr_data(demo, tmp_path, monkeypatch, change):
         assert bundles.prepare(source, bundle, None, "auto")["cache_hit"]
 
 
+@pytest.mark.parametrize(
+    "listing",
+    [
+        EvidenceError("tesseract failed"),
+        "List of available languages (2):\neng\ndeu\n",
+    ],
+)
+def test_unusable_tesseract_leaves_ocr_unavailable(monkeypatch, listing):
+    def list_languages(command):
+        if isinstance(listing, Exception):
+            raise listing
+        return listing
+
+    monkeypatch.setattr(evidence.shutil, "which", lambda _: "tesseract")
+    monkeypatch.setattr(evidence, "run", list_languages)
+    settings, backends, inputs = evidence.backend_config({"streams": [{}]}, None, "auto")
+    assert settings == {"asr": None, "ocr": None, "ocr_request": "auto"}
+    assert backends == {"asr": None, "ocr": None}
+    assert inputs == {}
+
+
 def test_tesseract_literal_quote_preserves_word_boxes(tmp_path, monkeypatch):
     tsv = (
         "level\tleft\ttop\twidth\theight\tconf\ttext\n"
