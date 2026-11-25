@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .media import EvidenceError, digest, run
+from .media import EvidenceError, device_signature, digest, run
 
 ASR_SETTINGS = {
     "sample_rate": 16000,
@@ -28,13 +28,21 @@ ASR_SETTINGS = {
 OCR_SETTINGS = {"page_segmentation": 11, "language": "eng"}
 
 
+def fingerprint(path: Path, signatures: dict) -> str:
+    resolved = path.resolve()
+    for entry in (path.parent, path, resolved.parent, resolved):
+        signatures[entry] = device_signature(entry, follow_symlinks=False)
+    return digest(resolved)
+
+
 def backend_config(
     media: dict,
     model: Path | None,
     ocr: str,
-) -> tuple[dict, dict]:
+) -> tuple[dict, dict, dict]:
     settings = {"asr": None, "ocr": None}
     backends = {"asr": None, "ocr": None}
+    signatures = {}
     if len(media["streams"]) > 1:
         if model is None or not (model / "config.json").is_file():
             raise EvidenceError("Audio requires --model DIR.")
@@ -55,32 +63,31 @@ def backend_config(
             "version": mlx_whisper,
             "mlx_version": mlx,
             "model": {
-                "config_sha256": digest(model / "config.json"),
+                "config_sha256": fingerprint(model / "config.json", signatures),
                 "weights_file": weights.name,
-                "weights_sha256": digest(weights),
+                "weights_sha256": fingerprint(weights, signatures),
             },
         }
     if ocr == "auto" and shutil.which("tesseract"):
-        language_sha256 = tesseract_language_digest()
-        if language_sha256:
+        traineddata = tesseract_language_file()
+        if traineddata.is_file():
             settings["ocr"] = OCR_SETTINGS
             backends["ocr"] = {
                 "name": "tesseract",
                 "version": run(["tesseract", "--version"]).splitlines()[0],
-                "language_sha256": language_sha256,
+                "language_sha256": fingerprint(traineddata, signatures),
             }
     settings["ocr_request"] = ocr
-    return settings, backends
+    return settings, backends, signatures
 
 
-def tesseract_language_digest() -> str | None:
+def tesseract_language_file() -> Path:
     output = run(["tesseract", "--list-langs"]).splitlines()
     if not output or '"' not in output[0]:
         raise EvidenceError("Tesseract did not report its language data directory.")
     directory = Path(output[0].split('"')[1])
     language = OCR_SETTINGS["language"]
-    traineddata = directory / f"{language}.traineddata"
-    return digest(traineddata) if traineddata.is_file() else None
+    return directory / f"{language}.traineddata"
 
 
 def audio_pcm(source: Path, media: dict, wav: Path) -> np.ndarray:

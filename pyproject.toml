@@ -14,7 +14,7 @@ dependencies = ["av>=14,<20", "numpy>=1.26,<3", "Pillow>=10,<13", "toon-format>=
 
 [project.optional-dependencies]
 mlx = ["mlx-whisper>=0.4.3,<0.5"]
-dev = ["build>=1", "pytest>=8", "ruff>=0.11"]
+dev = ["pytest>=8", "ruff>=0.11"]
 
 [project.urls]
 Repository = "https://github.com/ddbaron/video-walkthrough-axi"

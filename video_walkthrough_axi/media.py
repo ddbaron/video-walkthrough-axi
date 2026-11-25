@@ -17,6 +17,11 @@ class EvidenceError(Exception):
     """A user-facing processing error."""
 
 
+def device_signature(path: Path, *, follow_symlinks: bool = True) -> tuple:
+    info = path.stat(follow_symlinks=follow_symlinks)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()

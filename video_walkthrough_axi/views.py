@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from .bundle import load_timeline, local_artifact, read_manifest
+from .bundle import event_time, load_timeline, local_artifact, read_manifest
 from .media import EvidenceError, digest
 
 TEXT_LIMIT = 500
@@ -49,21 +49,27 @@ def event_preview(event: dict) -> dict:
     }
 
 
+def verify_screenshot(root: Path, frame: dict) -> None:
+    path = frame["path"]
+    if digest(local_artifact(root, path)) != frame["sha256"]:
+        raise EvidenceError(f"Bundle screenshot SHA-256 differs: {path}")
+
+
 def inspect_window(root: Path, begin: float, end: float, limit: int, cursor: str | None) -> dict:
     manifest = read_manifest(root)
     timeline = load_timeline(root, manifest)
     context = None
     window = []
-    for event in timeline:
-        time = event["time"]
+    for event in sorted(timeline, key=event_time):
+        time = event_time(event)
+        if time > end:
+            break
         if event["kind"] == "frame":
-            if event["change_start"] < begin:
+            if time < begin:
                 context = event
-            if begin <= time <= end:
+            else:
                 window.append(event)
-            if time > end:
-                break
-        elif time <= end and event["speech"]["end"] > begin:
+        elif event["speech"]["end"] > begin:
             window.append(event)
 
     identity = hashlib.sha256(
@@ -79,6 +85,13 @@ def inspect_window(root: Path, begin: float, end: float, limit: int, cursor: str
 
     events = window[offset : offset + limit]
     following = offset + len(events)
+    frames = {event["path"]: event for event in timeline if event["kind"] == "frame"}
+    paths = {e["path"] if e["kind"] == "frame" else e["preceding_frame"] for e in events}
+    if context is not None:
+        paths.add(context["path"])
+    paths.discard(None)
+    for path in sorted(paths):
+        verify_screenshot(root, frames[path])
     return {
         "events": [event_preview(event) for event in events],
         "preceding_screen": frame_preview(context) if context else None,
@@ -160,8 +173,7 @@ def walkthrough(root: Path) -> str:
     for index, (frame, parts) in enumerate(zip(frames, speech[1:], strict=True), 1):
         time = timestamp(frame["time"])
         path = frame["path"]
-        if digest(local_artifact(root, path)) != frame["sha256"]:
-            raise EvidenceError(f"Bundle screenshot SHA-256 differs: {path}")
+        verify_screenshot(root, frame)
         flags = f" (review: {', '.join(frame['flags'])})" if frame["flags"] else ""
         lines += [
             f"## {index}. Screen at {time}",

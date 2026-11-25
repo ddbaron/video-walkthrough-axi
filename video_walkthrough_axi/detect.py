@@ -17,7 +17,6 @@ SETTINGS = {
     "local_global_floor": 0.00025,
     "local_tile": 0.032,
     "stability_global": 0.0025,
-    "stability_tile": 0.105,
     "impulse_global": 0.0035,
     "impulse_tile": 0.12,
     "impulse_motion_ceiling": 0.035,
@@ -62,7 +61,7 @@ def meaningful(score: tuple[float, float]) -> bool:
 
 
 def similar(score: tuple[float, float]) -> bool:
-    return score[0] < SETTINGS["stability_global"] and score[1] < SETTINGS["stability_tile"]
+    return score[0] < SETTINGS["stability_global"] and not meaningful(score)
 
 
 def abrupt(score: tuple[float, float]) -> bool:
@@ -84,9 +83,8 @@ class Candidate:
     score: tuple[float, float]
     last: float
 
-    @property
-    def confirmed(self) -> bool:
-        return self.last - self.sample.time >= SETTINGS["short_dwell"] - 1e-8
+    def confirmed(self, until: float) -> bool:
+        return until - self.sample.time >= SETTINGS["short_dwell"] - 1e-8
 
 
 @dataclass
@@ -115,9 +113,9 @@ class Selection:
         }
 
 
-def brief(candidate: Candidate, reason: str) -> Selection:
+def brief(candidate: Candidate, reason: str, confirmed: bool) -> Selection:
     flags = ("brief-state",)
-    if not candidate.confirmed:
+    if not confirmed:
         flags += ("limited-dwell",)
     return Selection(
         candidate.sample,
@@ -142,9 +140,10 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
     motion_since = None
     for sample in iterator:
         gray = sample.frame.to_ndarray(format="gray")
+        confirmed = candidate is not None and candidate.confirmed(sample.time)
         if gray.shape != reference.shape:
-            if candidate is not None and candidate.confirmed:
-                yield brief(candidate, "short-transition")
+            if candidate is not None and confirmed:
+                yield brief(candidate, "short-transition", confirmed)
             yield Selection(sample, "resolution-change", sample.time, (1, 1))
             reference, grid = gray, TileGrid(gray.shape)
             candidate, motion_since = None, None
@@ -152,8 +151,8 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
 
         score = grid.difference(gray, reference)
         if not meaningful(score):
-            if candidate is not None and (candidate.confirmed or abrupt(candidate.score)):
-                yield brief(candidate, "short-return")
+            if candidate is not None and (confirmed or abrupt(candidate.score)):
+                yield brief(candidate, "short-return", confirmed)
                 score = grid.difference(gray, candidate.gray)
                 yield Selection(sample, "reverted", sample.time, score)
                 reference = gray
@@ -167,10 +166,10 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
         elif similar(next_score := grid.difference(gray, candidate.gray)):
             candidate.last = sample.time
         else:
-            if candidate.confirmed or (
+            if confirmed or (
                 localized_impulse(candidate.score) and localized_impulse(next_score)
             ):
-                yield brief(candidate, "short-transition")
+                yield brief(candidate, "short-transition", confirmed)
                 reference = candidate.gray
                 score = next_score
                 motion_since = sample.time
@@ -192,7 +191,7 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
             yield Selection(
                 sample,
                 "extended-motion",
-                motion_since,
+                sample.time,
                 score,
                 ("unsettled-screen",),
             )
@@ -201,8 +200,8 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
         reference = gray
         candidate, motion_since = None, None
 
-    if candidate is not None and candidate.confirmed:
-        yield brief(candidate, "short-at-end")
+    if candidate is not None and candidate.confirmed(candidate.last):
+        yield brief(candidate, "short-at-end", True)
     elif candidate is not None:
         yield Selection(
             candidate.sample,

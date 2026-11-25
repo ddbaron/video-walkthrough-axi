@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+from fractions import Fraction
 
 import av
 import pytest
@@ -19,7 +20,7 @@ from demo_recording import (
     make_recording,
     screen,
 )
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat
 
 from video_walkthrough_axi import bundle as bundles
 from video_walkthrough_axi import evidence
@@ -43,6 +44,21 @@ def toon(*args, code=0):
 
 def manifest_of(bundle):
     return json.loads((bundle / "manifest.json").read_text())
+
+
+def amount_box():
+    x, y, width, height = AMOUNT_CROP
+    return x, y, x + width, y + height
+
+
+def assert_price_region(image, state):
+    other = "baseline" if state == "result" else "result"
+    actual = image.convert("RGB")
+    expected = screen(state).crop(amount_box())
+    alternate = screen(other).crop(amount_box())
+    error = sum(ImageStat.Stat(ImageChops.difference(actual, expected)).mean)
+    alternate_error = sum(ImageStat.Stat(ImageChops.difference(actual, alternate)).mean)
+    assert error < alternate_error
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +105,10 @@ def test_native_coverage_and_manifest(demo):
         with Image.open(path) as png:
             assert png.size == SIZE
             assert png.format == "PNG"
+            if frame["reason"] == "opening":
+                assert_price_region(png.crop(amount_box()), "baseline")
+            elif frame["time"] >= STATES["result"][0] / FPS:
+                assert_price_region(png.crop(amount_box()), "result")
 
 
 @pytest.mark.parametrize(
@@ -111,6 +131,39 @@ def test_localized_screen_at_end_or_resolution_change(ending, expected):
         samples.append(Sample(time, av.VideoFrame.from_image(image)))
     selections = list(select_frames(samples))
     assert [(item.sample.time, item.reason) for item in selections[1:]] == expected
+
+
+@pytest.mark.parametrize(
+    ("ending", "reason"),
+    [
+        ("baseline", "short-return"),
+        ("two-indicators", "short-transition"),
+        ("smaller", "short-transition"),
+        (None, "end-of-video"),
+    ],
+)
+def test_four_frame_localized_dwell_at_60_fps(ending, reason):
+    opening = av.VideoFrame.from_image(screen("baseline"))
+    badge = av.VideoFrame.from_image(screen("approval-indicator"))
+    samples = [Sample(0, opening), *(Sample(i / 60, badge) for i in range(1, 5))]
+    if ending is not None:
+        image = screen(ending)
+        if ending == "smaller":
+            image = image.resize((320, 180))
+        successor = av.VideoFrame.from_image(image)
+        samples += [Sample(5 / 60, successor), Sample(40 / 60, successor)]
+
+    _, first, *following = select_frames(samples)
+    assert first.sample is samples[1]
+    assert first.reason == reason
+    if ending is not None:
+        assert first.flags == ("brief-state",)
+        assert first.last_observed == 4 / 60
+    if ending == "two-indicators":
+        assert len(following) == 1
+        assert following[0].reason == "localized"
+        assert following[0].onset == 5 / 60
+        assert following[0].sample is samples[-1]
 
 
 def test_inspect_cursor_and_markdown(demo):
@@ -139,7 +192,9 @@ def test_inspect_cursor_and_markdown(demo):
         events += page["events"]
     assert [e["time"] for e in events] == sorted({e["time"] for e in events})
     frames = manifest_of(bundle)["frames"]
-    assert [e["path"] for e in events] == [f["path"] for f in frames if 1 <= f["time"] <= 10]
+    assert [e["path"] for e in events] == [
+        f["path"] for f in frames if 1 <= f["change_start"] <= 10
+    ]
     assert all(e["speech"] is None and e["ocr"] is None for e in events)
     md = cli("walkthrough", bundle)
     links = re.findall(r"\[Screenshot at .*?\]\((.*?)\)", md)
@@ -172,6 +227,9 @@ def test_readers_reject_replaced_evidence(demo, tmp_path):
     frames = manifest["frames"]
     (bundle / frames[0]["path"]).write_bytes((bundle / frames[1]["path"]).read_bytes())
     assert "screenshot SHA-256 differs" in toon("walkthrough", bundle, code=1)["error"]
+    for begin in (0, 0.1):
+        result = toon("inspect", bundle, "--from", begin, "--to", 0.2, code=1)
+        assert "screenshot SHA-256 differs" in result["error"]
 
     timeline = bundle / manifest["artifacts"]["timeline"]["path"]
     timeline.write_text("[]\n")
@@ -202,6 +260,9 @@ def test_narration_uses_screen_onset(demo, tmp_path, monkeypatch):
     warning = page["preceding_screen"]
     assert warning["change_start"] == STATES["warning"][0] / FPS
     assert warning["time"] > 4.8
+    after_onset = toon("inspect", bundle, "--from", 4.55, "--to", 5.2)
+    assert after_onset["preceding_screen"] == warning
+    assert all(event["kind"] == "speech" for event in after_onset["events"])
     indicator = next(
         frame
         for frame in manifest_of(bundle)["frames"]
@@ -215,8 +276,57 @@ def test_narration_uses_screen_onset(demo, tmp_path, monkeypatch):
     assert "- carefully\n" in steps[warning_index]
     assert "- Approval needed\n" in steps[warning_index]
 
+    args = ("inspect", bundle, "--from", 4.49, "--to", 4.8, "--limit", 1)
+    before_onset = toon(*args)
+    assert before_onset["preceding_screen"]["path"] == indicator["path"]
+    next_page = toon(*args, "--cursor", before_onset["next_cursor"])
+    assert next_page["events"] == [warning]
+    last_cursor = next_page["next_cursor"]
+    assert toon(*args, "--cursor", last_cursor)["events"] == [page["events"][1]]
+    (bundle / warning["path"]).write_bytes((bundle / indicator["path"]).read_bytes())
+    result = toon(*args, "--cursor", last_cursor, code=1)
+    assert "screenshot SHA-256 differs" in result["error"]
 
-def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch):
+
+def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch):
+    source, _ = demo
+    bundle = tmp_path / "scroll"
+    opening = av.VideoFrame.from_image(screen("baseline"))
+    motion = [
+        av.VideoFrame.from_image(Image.new("RGB", SIZE, color)) for color in ("black", "#808080")
+    ]
+    samples = [Sample(0, opening), *(Sample(i / FPS, motion[i % 2]) for i in range(FPS, 97))]
+    for sample in samples:
+        sample.frame.pts = round(sample.time * FPS)
+        sample.frame.time_base = Fraction(1, FPS)
+    segments = [
+        {"start": 2, "end": 2.5, "text": "Scrolling", "words": [], "flags": []},
+        {"start": 4, "end": 4.5, "text": "Row visible", "words": [], "flags": []},
+    ]
+    monkeypatch.setattr(bundles, "samples", lambda *_: iter(samples))
+    monkeypatch.setattr(
+        bundles, "transcribe", lambda *_: {"language": "en", "segments": segments, "flags": []}
+    )
+    bundles.prepare(source, bundle, None, "off")
+
+    page = toon("inspect", bundle, "--from", 1, "--to", 4)
+    before, captured, after = page["events"]
+    assert page["preceding_screen"]["time"] == 0
+    assert before["preceding_frame"] == page["preceding_screen"]["path"]
+    assert captured["time"] == captured["change_start"] == 4
+    assert captured["reason"] == "extended-motion"
+    assert "unsettled-screen" in captured["flags"]
+    assert after["preceding_frame"] == captured["path"]
+    later = toon("inspect", bundle, "--from", 4.1, "--to", 5)
+    assert later["preceding_screen"] == captured
+    _, opening_step, motion_step = cli("walkthrough", bundle).split("\n## ")
+    assert "- Scrolling\n" in opening_step
+    assert "Screen at 00:04.000" in motion_step
+    assert "- Row visible\n" in motion_step
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch, rollback):
     source, _ = demo
     bundle = tmp_path / "bundle"
     initial = toon("prepare", source, "--out", bundle, "--ocr", "off")
@@ -235,7 +345,11 @@ def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch):
 
     def change_language_data(paths, *, enabled):
         assert enabled
+        saved = traineddata.with_suffix(".original")
+        traineddata.rename(saved)
         traineddata.write_bytes(b"replacement")
+        if rollback:
+            saved.replace(traineddata)
         return [{"text": "", "words": [], "flags": []} for _ in paths]
 
     monkeypatch.setattr(bundles, "screen_text", change_language_data)
@@ -249,22 +363,35 @@ def test_frame_crops_and_nearest_timestamp(demo):
     _, bundle = demo
     exact = toon("frame", bundle, "--at", 8)
     assert exact["selection"] == "exact"
-    assert Image.open(exact["path"]).size == SIZE
+    assert exact["time"] == 8
+    with Image.open(exact["path"]) as image:
+        assert image.size == SIZE
+        exact_price = image.crop(amount_box())
+        assert_price_region(exact_price, "result")
     earlier = toon("frame", bundle, "--at", 8.01, "--crop", ",".join(map(str, AMOUNT_CROP)))
     assert earlier["selection"] == "nearest-frame"
     assert earlier["time"] == 8
-    with Image.open(earlier["path"]) as cropped, Image.open(exact["path"]) as full:
-        x, y, w, h = AMOUNT_CROP
-        assert cropped.tobytes() == full.crop((x, y, x + w, y + h)).tobytes()
+    with Image.open(earlier["path"]) as cropped:
+        assert cropped.size == AMOUNT_CROP[2:]
+        assert_price_region(cropped, "result")
+        assert cropped.tobytes() == exact_price.tobytes()
     later = toon("frame", bundle, "--at", 8.03)
     assert later["time"] == pytest.approx(8 + 1 / FPS)
+    with Image.open(later["path"]) as image:
+        assert image.size == SIZE
+        assert_price_region(image.crop(amount_box()), "result")
     after = toon("frame", bundle, "--at", 120)
     assert after["time"] == pytest.approx(12 - 1 / FPS)
     assert "exceeds" in toon("frame", bundle, "--at", 0, "--crop", "639,0,2,5", code=1)["error"]
 
 
-@pytest.mark.skipif(not shutil.which("tesseract"), reason="Tesseract is optional")
 def test_ocr_amount_and_warning(demo, tmp_path):
+    tesseract = shutil.which("tesseract")
+    if tesseract is None:
+        pytest.skip("requires Tesseract with English language data")
+    languages = subprocess.run([tesseract, "--list-langs"], capture_output=True, text=True)
+    if "eng" not in languages.stdout.splitlines()[1:]:
+        pytest.skip("requires Tesseract English language data")
     source, _ = demo
     bundle = tmp_path / "ocr"
     assert not toon("prepare", source, "--out", bundle, "--ocr", "off")["cache_hit"]
@@ -303,13 +430,16 @@ def test_real_mlx_narration(tmp_path):
     path = manifest["artifacts"]["transcript"]["path"]
     segments = json.loads((bundle / path).read_text())["segments"]
     assert any(segment["words"] for segment in segments)
-    assert any(
-        "approval" in segment["text"].lower()
-        and "quiet-audio" in segment["flags"]
-        and segment["start"] < QUIET_APPROVAL_END
-        and segment["end"] > QUIET_APPROVAL_START
+    approval_starts = [
+        [
+            word["start"]
+            for word in segment["words"]
+            if QUIET_APPROVAL_START <= word["start"] < QUIET_APPROVAL_END
+        ]
         for segment in segments
-    )
+        if "approval" in segment["text"].lower() and "quiet-audio" in segment["flags"]
+    ]
+    assert any(starts == sorted(starts) and len(set(starts)) > 1 for starts in approval_starts)
     assert all(
         segment["start"] <= w["start"] <= w["end"] <= segment["end"]
         for segment in segments

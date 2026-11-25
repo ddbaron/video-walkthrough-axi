@@ -14,7 +14,7 @@ import av
 from . import __version__
 from .detect import SETTINGS, select_frames
 from .evidence import backend_config, screen_text, transcribe
-from .media import EvidenceError, digest, pick_frame, probe, run, samples, verify_png
+from .media import EvidenceError, device_signature, digest, pick_frame, probe, run, samples, verify_png
 
 SCHEMA_VERSION = 1
 
@@ -39,11 +39,6 @@ def read_manifest(root: Path) -> dict:
     if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION:
         raise EvidenceError(f"Expected evidence manifest schema version {SCHEMA_VERSION}.")
     return manifest
-
-
-def device_signature(path: Path) -> tuple:
-    info = path.stat()
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 def ensure_unchanged(path: Path, signature: tuple) -> None:
@@ -82,6 +77,10 @@ def cached_manifest(root: Path, evidence: Path, cache_key: str) -> dict | None:
     return None
 
 
+def event_time(event: dict) -> float:
+    return event["change_start"] if event["kind"] == "frame" else event["time"]
+
+
 def merge(frames: list[dict], transcript: dict) -> list[dict]:
     times = [f["change_start"] for f in frames]
     events = [{"kind": "frame", **frame} for frame in frames]
@@ -95,7 +94,7 @@ def merge(frames: list[dict], transcript: dict) -> list[dict]:
                 "preceding_frame": frames[index]["path"] if index >= 0 else None,
             }
         )
-    return sorted(events, key=lambda event: event["time"])
+    return sorted(events, key=event_time)
 
 
 def build(staging: Path, name: str, source: Path, manifest: dict, model: Path | None) -> None:
@@ -155,7 +154,7 @@ def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
     signature = device_signature(source)
     sha = digest(source)
     media = probe(source)
-    settings, evidence_backends = backend_config(media, model, ocr)
+    settings, evidence_backends, signatures = backend_config(media, model, ocr)
     config = {
         "schema_version": SCHEMA_VERSION,
         "generator_version": __version__,
@@ -194,7 +193,7 @@ def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
                 staging = Path(tmp)
                 name = f"{cache_key}-{staging.name.removeprefix('.stage-')}"
                 build(staging, name, source, manifest, model)
-                if backend_config(media, model, ocr) != (settings, evidence_backends):
+                if backend_config(media, model, ocr) != (settings, evidence_backends, signatures):
                     raise EvidenceError("Speech or OCR backend inputs changed during processing.")
                 ensure_unchanged(source, signature)
                 write_json(staging / "manifest.json", manifest)

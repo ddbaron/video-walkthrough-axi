@@ -52,8 +52,10 @@ def screen(state: str) -> Image.Image:
     elif state == "confirmation":
         draw.rounded_rectangle((325, 181, 582, 229), 6, fill="#d3f2db")
         draw.text((345, 191), "Selection saved", font=bold, fill="#102c20")
-    elif state == "approval-indicator":
+    elif state in {"approval-indicator", "two-indicators"}:
         draw.rectangle((492, 184, 500, 191), fill="#203449")
+        if state == "two-indicators":
+            draw.rectangle((532, 184, 540, 191), fill="#203449")
     elif state == "warning":
         draw.rounded_rectangle((44, 240, 420, 308), 6, fill="#ffe4a2")
         draw.text((61, 247), "Warning", font=bold, fill="#271301")
