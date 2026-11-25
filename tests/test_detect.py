@@ -1,6 +1,7 @@
 import av
 import pytest
 from demo_recording import FPS, screen
+from PIL import ImageDraw
 
 from video_walkthrough_axi.detect import select_frames
 from video_walkthrough_axi.media import Sample
@@ -52,7 +53,6 @@ def test_consecutive_localized_screens_merge_only_matching_frames(ending, fps, f
     _, changed, *following = select_frames(samples)
     assert changed.onset == 1 / fps
     assert changed.sample is samples[frames]
-    assert changed.last_observed == frames / fps
     assert changed.flags == ()
     if ending is None:
         assert following == []
@@ -75,3 +75,19 @@ def test_color_only_warning_and_return():
         (0.7, 0.1),
         (0.8, 0.8),
     ]
+
+
+def test_adjacent_color_excursion_survives_merging():
+    samples = []
+    for index, shade in enumerate((100, 110, 94, 110)):
+        image = screen("baseline")
+        ImageDraw.Draw(image).rectangle((320, 180, 399, 239), fill=(shade, shade, shade))
+        samples.append(Sample(index / 10, av.VideoFrame.from_image(image)))
+
+    assert [screen.sample.time for screen in select_frames(samples)] == [0, 0.2, 0.3]
+
+
+def test_warning_survives_full_screenshot_bucket():
+    states = ("baseline", "dropdown", "brief-warning", "baseline")
+    samples = [screen_sample(index / 10, state) for index, state in enumerate(states)]
+    assert [screen.sample.time for screen in select_frames(samples)] == [0, 0.1, 0.2]

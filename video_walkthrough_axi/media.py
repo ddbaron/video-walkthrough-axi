@@ -17,8 +17,8 @@ class EvidenceError(Exception):
     """A user-facing processing error."""
 
 
-def device_signature(path: Path, *, follow_symlinks: bool = True) -> tuple:
-    info = path.stat(follow_symlinks=follow_symlinks)
+def device_signature(path: Path) -> tuple:
+    info = path.stat()
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 

@@ -52,7 +52,7 @@ Once dependencies and the model are installed, all four commands run offline wit
 
 Bundles, terminal output, crops and derived drafts may contain private material. Keep them with the recording and use a private destination when redirecting CLI output. Prior generations remain in the bundle so earlier screenshot links and cache entries remain usable.
 
-Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. Prepare saves at most three screenshots per recording second. When more changes occur in a second, the last screenshot shows the latest change, with the `extended-motion` reason and an `unsettled-screen` flag. Its change start records the first selected change in that second. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
+Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. Prepare limits sustained motion to three screenshots per recording second and gives brief excursions priority. When motion is thinned, the latest retained motion screenshot carries the `extended-motion` reason and an `unsettled-screen` flag. Its change start is carried across consecutive seconds of thinned motion. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
 
 ## Acceptance checks
 

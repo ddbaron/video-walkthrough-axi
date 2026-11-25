@@ -8,6 +8,8 @@ import sys
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
+from dataclasses import dataclass
+from functools import partial
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -28,33 +30,37 @@ ASR_SETTINGS = {
 OCR_SETTINGS = {"page_segmentation": 11, "language": "eng"}
 
 
-def fingerprint(path: Path, signatures: dict) -> str:
-    resolved = path.resolve()
-    entries = {resolved, *resolved.parents}
-    pending = [path.absolute()]
-    visited = set()
-    while pending:
-        current = pending.pop()
-        for entry in (current, *current.parents):
-            if entry in visited:
-                continue
-            visited.add(entry)
-            entries.add(entry)
-            if entry.is_symlink():
-                pending.append(entry.parent / entry.readlink())
-    for entry in entries:
-        signatures[entry] = device_signature(entry, follow_symlinks=False)
-    return digest(resolved)
+@dataclass(frozen=True)
+class BackendInput:
+    path: Path
+    identity: tuple
+    sha256: str
+
+
+def fingerprint(path: Path, inputs: dict[str, BackendInput]) -> str:
+    resolved = path.resolve(strict=True)
+    identity = device_signature(resolved)[:4]
+    sha256 = digest(resolved)
+    inputs[path.name] = BackendInput(resolved, identity, sha256)
+    return sha256
+
+
+def snapshot_inputs(directory: Path, inputs: dict[str, BackendInput]) -> None:
+    for name, item in inputs.items():
+        snapshot = directory / name
+        shutil.copyfile(item.path, snapshot)
+        if digest(snapshot) != item.sha256:
+            raise EvidenceError("Speech or OCR backend inputs changed during processing.")
 
 
 def backend_config(
     media: dict,
     model: Path | None,
     ocr: str,
-) -> tuple[dict, dict, dict]:
+) -> tuple[dict, dict, dict[str, BackendInput]]:
     settings = {"asr": None, "ocr": None}
     backends = {"asr": None, "ocr": None}
-    signatures = {}
+    inputs = {}
     if len(media["streams"]) > 1:
         if model is None or not (model / "config.json").is_file():
             raise EvidenceError("Audio requires --model DIR.")
@@ -75,9 +81,9 @@ def backend_config(
             "version": mlx_whisper,
             "mlx_version": mlx,
             "model": {
-                "config_sha256": fingerprint(model / "config.json", signatures),
+                "config_sha256": fingerprint(model / "config.json", inputs),
                 "weights_file": weights.name,
-                "weights_sha256": fingerprint(weights, signatures),
+                "weights_sha256": fingerprint(weights, inputs),
             },
         }
     if ocr == "auto" and shutil.which("tesseract"):
@@ -87,10 +93,10 @@ def backend_config(
             backends["ocr"] = {
                 "name": "tesseract",
                 "version": run(["tesseract", "--version"]).splitlines()[0],
-                "language_sha256": fingerprint(traineddata, signatures),
+                "language_sha256": fingerprint(traineddata, inputs),
             }
     settings["ocr_request"] = ocr
-    return settings, backends, signatures
+    return settings, backends, inputs
 
 
 def tesseract_language_file() -> Path:
@@ -206,7 +212,7 @@ def normalized_speech(raw: dict, pcm: np.ndarray) -> list[dict]:
 def transcribe(
     source: Path,
     media: dict,
-    model: Path | None,
+    model: Path,
     wav: Path,
 ) -> dict:
     if len(media["streams"]) == 1:
@@ -241,17 +247,20 @@ def transcribe(
     }
 
 
-def recognize(path: Path) -> dict:
+def recognize(path: Path, data_dir: Path) -> dict:
     tsv = run(
         [
             "tesseract",
             str(path),
             "stdout",
+            "--tessdata-dir",
+            str(data_dir),
             "-l",
             OCR_SETTINGS["language"],
             "--psm",
             str(OCR_SETTINGS["page_segmentation"]),
-            "tsv",
+            "-c",
+            "tessedit_create_tsv=1",
         ],
         env={**os.environ, "OMP_THREAD_LIMIT": "1"},
     )
@@ -261,7 +270,7 @@ def recognize(path: Path) -> dict:
             "confidence": float(row["conf"]),
             "box": [int(row[k]) for k in ("left", "top", "width", "height")],
         }
-        for row in csv.DictReader(tsv.splitlines(), delimiter="\t")
+        for row in csv.DictReader(tsv.splitlines(), delimiter="\t", quoting=csv.QUOTE_NONE)
         if row["level"] == "5" and row["text"].strip()
     ]
     return {
@@ -271,8 +280,8 @@ def recognize(path: Path) -> dict:
     }
 
 
-def screen_text(paths: list[Path], enabled: bool) -> list[dict | None]:
-    if not enabled:
+def screen_text(paths: list[Path], data_dir: Path | None) -> list[dict | None]:
+    if data_dir is None:
         return [None] * len(paths)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        return list(pool.map(recognize, paths))
+        return list(pool.map(partial(recognize, data_dir=data_dir), paths))

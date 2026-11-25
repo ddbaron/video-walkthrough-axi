@@ -11,17 +11,19 @@ from video_walkthrough_axi.media import EvidenceError, probe
 
 
 @pytest.mark.parametrize(
-    "change", ["replacement", "rollback", "intermediate-link", "ordinary-ancestor"]
+    "change", ["replacement", "rollback", "intermediate-link", "ordinary-ancestor", "unrelated"]
 )
-def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch, change):
+def test_prepare_binds_ocr_data(demo, tmp_path, monkeypatch, change):
     source, _ = demo
     bundle = tmp_path / "bundle"
     initial = toon("prepare", source, "--out", bundle, "--ocr", "off")
     assert not initial["cache_hit"]
     manifest = manifest_of(bundle)
-    traineddata = tmp_path / "eng.traineddata"
+    home = tmp_path / "home"
+    home.mkdir()
+    traineddata = home / "eng.traineddata"
     if change == "intermediate-link":
-        active = tmp_path / "active"
+        active = home / "active"
         active.mkdir()
         original = tmp_path / "original"
         alternate = tmp_path / "alternate"
@@ -32,7 +34,7 @@ def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch, change):
         link.symlink_to(original, target_is_directory=True)
         traineddata.symlink_to(link / traineddata.name)
     elif change == "ordinary-ancestor":
-        active = tmp_path / "active"
+        active = home / "active"
         traineddata = active / "share" / "tessdata" / traineddata.name
         traineddata.parent.mkdir(parents=True)
         traineddata.write_bytes(b"original")
@@ -47,34 +49,62 @@ def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch, change):
         else "tesseract test",
     )
 
-    def change_language_data(paths, *, enabled):
-        assert enabled
+    def change_language_data(paths, data_dir):
+        data = data_dir / traineddata.name
         if change == "intermediate-link":
             saved = link.with_name("saved")
             link.rename(saved)
             link.symlink_to(alternate, target_is_directory=True)
             assert traineddata.read_bytes() == b"replacement"
+            observed = data.read_text()
             saved.replace(link)
         elif change == "ordinary-ancestor":
             saved = active.with_name("saved")
             active.rename(saved)
             traineddata.parent.mkdir(parents=True)
             traineddata.write_bytes(b"replacement")
+            observed = data.read_text()
             active.rename(active.with_name("alternate"))
             saved.rename(active)
+        elif change == "unrelated":
+            (home / "unrelated.txt").write_text("unrelated")
+            observed = data.read_text()
         else:
             saved = traineddata.with_suffix(".original")
             traineddata.rename(saved)
             traineddata.write_bytes(b"replacement")
+            observed = data.read_text()
             if change == "rollback":
                 saved.replace(traineddata)
-        return [{"text": "", "words": [], "flags": []} for _ in paths]
+        return [{"text": observed, "words": [], "flags": []} for _ in paths]
 
     monkeypatch.setattr(bundles, "screen_text", change_language_data)
-    with pytest.raises(EvidenceError, match="backend inputs changed"):
-        bundles.prepare(source, bundle, None, "auto")
-    assert manifest_of(bundle) == manifest
-    assert len(list((bundle / "evidence").iterdir())) == 1
+    if change == "replacement":
+        with pytest.raises(EvidenceError, match="backend inputs changed"):
+            bundles.prepare(source, bundle, None, "auto")
+        assert manifest_of(bundle) == manifest
+        assert len(list((bundle / "evidence").iterdir())) == 1
+    else:
+        assert not bundles.prepare(source, bundle, None, "auto")["cache_hit"]
+        page = toon("inspect", bundle, "--from", 0, "--to", 12)
+        assert page["events"]
+        assert {event["ocr"] for event in page["events"]} == {"original"}
+        assert bundles.prepare(source, bundle, None, "auto")["cache_hit"]
+
+
+def test_tesseract_literal_quote_preserves_word_boxes(tmp_path, monkeypatch):
+    tsv = (
+        "level\tleft\ttop\twidth\theight\tconf\ttext\n"
+        '5\t1\t2\t30\t5\t97\t"Supervisor\n'
+        '5\t33\t2\t27\t5\t92\tapproval"\n'
+    )
+    monkeypatch.setattr(evidence, "run", lambda command, *, env: tsv)
+    result = evidence.recognize(tmp_path / "screen.png", tmp_path)
+    assert result["text"] == '"Supervisor approval"'
+    assert result["words"] == [
+        {"text": '"Supervisor', "confidence": 97, "box": [1, 2, 30, 5]},
+        {"text": 'approval"', "confidence": 92, "box": [33, 2, 27, 5]},
+    ]
 
 
 def test_audio_stream_offset(demo, tmp_path):

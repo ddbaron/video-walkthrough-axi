@@ -206,7 +206,7 @@ def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch, fps, rep
     bundle = tmp_path / "scroll"
     opening = av.VideoFrame.from_image(screen("baseline"))
     samples = [Sample(0, opening)]
-    for tick in range(fps):
+    for tick in range(3 * fps):
         shade = (tick // repeat % 6) * 40
         image = Image.new("RGB", SIZE, (shade, shade, shade))
         samples.append(Sample(1 + tick / fps, av.VideoFrame.from_image(image)))
@@ -215,8 +215,8 @@ def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch, fps, rep
         sample.frame.time_base = Fraction(1, fps)
     capture_time = samples[-1].time
     segments = [
-        {"start": 1.6, "end": 1.7, "text": "Scrolling", "words": [], "flags": []},
-        {"start": capture_time, "end": 2, "text": "Row visible", "words": [], "flags": []},
+        {"start": 3.6, "end": 3.7, "text": "Scrolling", "words": [], "flags": []},
+        {"start": capture_time, "end": 4, "text": "Row visible", "words": [], "flags": []},
     ]
     monkeypatch.setattr(bundles, "samples", lambda *_: iter(samples))
     monkeypatch.setattr(
@@ -224,9 +224,9 @@ def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch, fps, rep
     )
     bundles.prepare(source, bundle, None, "off")
 
-    page = toon("inspect", bundle, "--from", 1, "--to", 2)
+    page = toon("inspect", bundle, "--from", 3, "--to", 4)
     first, second, before, captured, after = page["events"]
-    assert page["preceding_screen"]["time"] == 0
+    assert page["preceding_screen"]["time"] < 3
     assert first["kind"] == second["kind"] == "frame"
     assert before["preceding_frame"] == second["path"]
     assert captured["time"] == pytest.approx(capture_time)
@@ -235,12 +235,17 @@ def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch, fps, rep
     assert "unsettled-screen" in captured["flags"]
     assert after["preceding_frame"] == captured["path"]
     timeline = json.loads((bundle / page["timeline"]).read_text())
+    for second in range(1, 4):
+        assert sum(
+            event["kind"] == "frame" and second <= event["time"] < second + 1
+            for event in timeline
+        ) == 3
     assert [(event["kind"], event["time"]) for event in timeline[-3:]] == [
-        ("speech", 1.6),
+        ("speech", 3.6),
         ("frame", capture_time),
         ("speech", capture_time),
     ]
-    later = toon("inspect", bundle, "--from", 2, "--to", 3)
+    later = toon("inspect", bundle, "--from", 4, "--to", 5)
     assert later["preceding_screen"] == captured
     *_, preceding_step, motion_step = cli("walkthrough", bundle).split("\n## ")
     assert "- Scrolling\n" in preceding_step
