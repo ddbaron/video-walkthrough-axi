@@ -72,9 +72,11 @@ def test_prepare_binds_ocr_data(demo, tmp_path, monkeypatch, change):
     monkeypatch.setattr(
         evidence,
         "run",
-        lambda command: f'List of available languages in "{traineddata.parent}" (1):\neng'
-        if command[-1] == "--list-langs"
-        else "tesseract test",
+        lambda command: (
+            f'List of available languages in "{traineddata.parent}" (1):\neng'
+            if command[-1] == "--list-langs"
+            else "tesseract test"
+        ),
     )
 
     def change_language_data(paths, data_dir):

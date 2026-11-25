@@ -54,7 +54,7 @@ Prepare and frame use a private directory under the system temporary directory, 
 
 Bundles, terminal output, crops and derived drafts may contain private material. Keep them with the recording and use a private destination when redirecting CLI output. Prior generations remain in the bundle so earlier screenshot links and cache entries remain usable.
 
-Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. Prepare limits sustained motion to three screenshots per recording second and gives brief excursions priority. When motion is thinned, the latest retained motion screenshot carries the `extended-motion` reason and an `unsettled-screen` flag. Its change start follows the observed motion across seconds and resets after a held screen. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
+Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. Prepare limits sustained motion to three screenshots per recording second and prioritizes held screens and brief excursions. When motion is thinned, the latest retained motion screenshot carries the `extended-motion` reason and an `unsettled-screen` flag. Its change start follows the observed motion across seconds and resets after a held screen. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
 
 ## Acceptance checks
 

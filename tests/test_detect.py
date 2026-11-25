@@ -104,8 +104,7 @@ def test_held_warning_survives_transient_transitions():
 
 def test_alternating_screens_stay_within_screenshot_cap():
     samples = [
-        screen_sample(index / 10, "dropdown" if index % 2 else "baseline")
-        for index in range(21)
+        screen_sample(index / 10, "dropdown" if index % 2 else "baseline") for index in range(21)
     ]
     counts = {}
     for selection in select_frames(samples):

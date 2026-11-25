@@ -290,10 +290,13 @@ def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch, fps, rep
     assert after["preceding_frame"] == captured["path"]
     timeline = json.loads((bundle / page["timeline"]).read_text())
     for second in range(1, 4):
-        assert sum(
-            event["kind"] == "frame" and second <= event["time"] < second + 1
-            for event in timeline
-        ) == 3
+        assert (
+            sum(
+                event["kind"] == "frame" and second <= event["time"] < second + 1
+                for event in timeline
+            )
+            == 3
+        )
     assert [(event["kind"], event["time"]) for event in timeline[-3:]] == [
         ("speech", 3.6),
         ("frame", capture_time),

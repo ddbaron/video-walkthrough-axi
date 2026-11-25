@@ -146,7 +146,12 @@ def screen_changes(samples: Iterable[Sample]) -> Iterator[Selection]:
 
     if start is not first:
         yield screen_selection(
-            start, last, reason, score, False, motion_start,
+            start,
+            last,
+            reason,
+            score,
+            False,
+            motion_start,
             held=last.time >= start.time + MOTION_PAUSE_SECONDS,
         )
 
@@ -166,8 +171,15 @@ def screen_selection(
     single = start is last
     flags = ("single-frame",) if single else ()
     return Selection(
-        capture, reason, start.time, score, flags, excursion, between_changes and single,
-        motion_start, held,
+        capture,
+        reason,
+        start.time,
+        score,
+        flags,
+        excursion,
+        between_changes and single,
+        motion_start,
+        held,
     )
 
 
