@@ -134,11 +134,39 @@ def test_localized_screen_at_end_or_resolution_change(ending, expected):
 
 
 @pytest.mark.parametrize(
+    ("ending", "reason", "following_reason"),
+    [
+        ("baseline", "short-return", "reverted"),
+        ("full-confirmation", "short-transition", "settled"),
+        ("smaller", "short-transition", "resolution-change"),
+        (None, "short-at-end", None),
+    ],
+)
+def test_single_frame_banner_survives_each_exit(ending, reason, following_reason):
+    opening = av.VideoFrame.from_image(screen("baseline"))
+    banner = av.VideoFrame.from_image(screen("single-frame"))
+    samples = [Sample(0, opening), Sample(1 / FPS, banner)]
+    if ending is not None:
+        image = screen(ending)
+        if ending == "smaller":
+            image = image.resize((320, 180))
+        successor = av.VideoFrame.from_image(image)
+        samples.extend(Sample(i / FPS, successor) for i in range(2, 18))
+
+    _, brief, *following = select_frames(samples)
+    assert brief.sample is samples[1]
+    assert brief.reason == reason
+    assert brief.flags == ("brief-state", "limited-dwell")
+    assert [item.reason for item in following] == ([following_reason] if following_reason else [])
+
+
+@pytest.mark.parametrize(
     ("ending", "reason"),
     [
         ("baseline", "short-return"),
         ("two-indicators", "short-transition"),
         ("smaller", "short-transition"),
+        ("known-end", "short-at-end"),
         (None, "end-of-video"),
     ],
 )
@@ -146,7 +174,10 @@ def test_four_frame_localized_dwell_at_60_fps(ending, reason):
     opening = av.VideoFrame.from_image(screen("baseline"))
     badge = av.VideoFrame.from_image(screen("approval-indicator"))
     samples = [Sample(0, opening), *(Sample(i / 60, badge) for i in range(1, 5))]
-    if ending is not None:
+    if ending == "known-end":
+        badge.time_base = Fraction(1, 60)
+        badge.duration = 1
+    elif ending is not None:
         image = screen(ending)
         if ending == "smaller":
             image = image.resize((320, 180))
@@ -164,6 +195,24 @@ def test_four_frame_localized_dwell_at_60_fps(ending, reason):
         assert following[0].reason == "localized"
         assert following[0].onset == 5 / 60
         assert following[0].sample is samples[-1]
+
+
+def test_color_only_warning_and_return():
+    ready, warning = (
+        av.VideoFrame.from_image(screen(state)) for state in ("ready-status", "warning-status")
+    )
+    samples = [
+        Sample(0, ready),
+        Sample(0.1, warning),
+        Sample(0.7, warning),
+        Sample(0.8, ready),
+        Sample(1.4, ready),
+    ]
+    assert [(item.sample.time, item.onset) for item in select_frames(samples)] == [
+        (0, 0),
+        (0.7, 0.1),
+        (1.4, 0.8),
+    ]
 
 
 def test_inspect_cursor_and_markdown(demo):
@@ -288,17 +337,18 @@ def test_narration_uses_screen_onset(demo, tmp_path, monkeypatch):
     assert "screenshot SHA-256 differs" in result["error"]
 
 
-def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch):
+@pytest.mark.parametrize("fps", [10, FPS])
+def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch, fps):
     source, _ = demo
     bundle = tmp_path / "scroll"
     opening = av.VideoFrame.from_image(screen("baseline"))
     motion = [
         av.VideoFrame.from_image(Image.new("RGB", SIZE, color)) for color in ("black", "#808080")
     ]
-    samples = [Sample(0, opening), *(Sample(i / FPS, motion[i % 2]) for i in range(FPS, 97))]
+    samples = [Sample(0, opening), *(Sample(i / fps, motion[i % 2]) for i in range(fps, 4 * fps + 1))]
     for sample in samples:
-        sample.frame.pts = round(sample.time * FPS)
-        sample.frame.time_base = Fraction(1, FPS)
+        sample.frame.pts = round(sample.time * fps)
+        sample.frame.time_base = Fraction(1, fps)
     segments = [
         {"start": 2, "end": 2.5, "text": "Scrolling", "words": [], "flags": []},
         {"start": 4, "end": 4.5, "text": "Row visible", "words": [], "flags": []},
@@ -313,10 +363,18 @@ def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch):
     before, captured, after = page["events"]
     assert page["preceding_screen"]["time"] == 0
     assert before["preceding_frame"] == page["preceding_screen"]["path"]
-    assert captured["time"] == captured["change_start"] == 4
+    assert captured["time"] == 4
+    assert captured["change_start"] == 1
     assert captured["reason"] == "extended-motion"
     assert "unsettled-screen" in captured["flags"]
     assert after["preceding_frame"] == captured["path"]
+    timeline = json.loads((bundle / page["timeline"]).read_text())
+    assert [(event["kind"], event["time"]) for event in timeline] == [
+        ("frame", 0),
+        ("speech", 2),
+        ("frame", 4),
+        ("speech", 4),
+    ]
     later = toon("inspect", bundle, "--from", 4.1, "--to", 5)
     assert later["preceding_screen"] == captured
     _, opening_step, motion_step = cli("walkthrough", bundle).split("\n## ")
@@ -325,15 +383,27 @@ def test_extended_motion_uses_capture_time(demo, tmp_path, monkeypatch):
     assert "- Row visible\n" in motion_step
 
 
-@pytest.mark.parametrize("rollback", [False, True])
-def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch, rollback):
+@pytest.mark.parametrize("change", ["replacement", "rollback", "intermediate-link"])
+def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch, change):
     source, _ = demo
     bundle = tmp_path / "bundle"
     initial = toon("prepare", source, "--out", bundle, "--ocr", "off")
     assert not initial["cache_hit"]
     manifest = manifest_of(bundle)
     traineddata = tmp_path / "eng.traineddata"
-    traineddata.write_bytes(b"original")
+    if change == "intermediate-link":
+        active = tmp_path / "active"
+        active.mkdir()
+        original = tmp_path / "original"
+        alternate = tmp_path / "alternate"
+        for directory, data in ((original, b"original"), (alternate, b"replacement")):
+            directory.mkdir()
+            (directory / traineddata.name).write_bytes(data)
+        link = active / "current"
+        link.symlink_to(original, target_is_directory=True)
+        traineddata.symlink_to(link / traineddata.name)
+    else:
+        traineddata.write_bytes(b"original")
     monkeypatch.setattr(evidence.shutil, "which", lambda _: "tesseract")
     monkeypatch.setattr(
         evidence,
@@ -345,11 +415,18 @@ def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch, rollback):
 
     def change_language_data(paths, *, enabled):
         assert enabled
-        saved = traineddata.with_suffix(".original")
-        traineddata.rename(saved)
-        traineddata.write_bytes(b"replacement")
-        if rollback:
-            saved.replace(traineddata)
+        if change == "intermediate-link":
+            saved = link.with_name("saved")
+            link.rename(saved)
+            link.symlink_to(alternate, target_is_directory=True)
+            assert traineddata.read_bytes() == b"replacement"
+            saved.replace(link)
+        else:
+            saved = traineddata.with_suffix(".original")
+            traineddata.rename(saved)
+            traineddata.write_bytes(b"replacement")
+            if change == "rollback":
+                saved.replace(traineddata)
         return [{"text": "", "words": [], "flags": []} for _ in paths]
 
     monkeypatch.setattr(bundles, "screen_text", change_language_data)

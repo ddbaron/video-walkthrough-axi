@@ -11,7 +11,7 @@ SETTINGS = {
     "sampling": "all-decoded-frames",
     "grid_columns": 16,
     "grid_rows": 12,
-    "changed_luma": 15,
+    "changed_rgb_channel": 15,
     "settled_global": 0.007,
     "settled_tile": 0.085,
     "local_global_floor": 0.00025,
@@ -40,7 +40,7 @@ class TileGrid:
             return 1.0, 1.0
         delta = np.subtract(current, reference, dtype=np.int16)
         np.abs(delta, out=delta)
-        changed = delta >= SETTINGS["changed_luma"]
+        changed = np.any(delta >= SETTINGS["changed_rgb_channel"], axis=2)
         total = int(np.count_nonzero(changed))
         fraction = total / changed.size
         if fraction < SETTINGS["local_global_floor"]:
@@ -64,27 +64,12 @@ def similar(score: tuple[float, float]) -> bool:
     return score[0] < SETTINGS["stability_global"] and not meaningful(score)
 
 
-def abrupt(score: tuple[float, float]) -> bool:
-    return score[0] >= SETTINGS["impulse_global"] or score[1] >= SETTINGS["impulse_tile"]
-
-
-def localized_impulse(score: tuple[float, float]) -> bool:
-    global_delta, tile_delta = score
-    return (
-        SETTINGS["impulse_global"] <= global_delta <= SETTINGS["impulse_motion_ceiling"]
-        and tile_delta >= SETTINGS["impulse_tile"]
-    )
-
-
 @dataclass
 class Candidate:
     sample: Sample
-    gray: np.ndarray
+    pixels: np.ndarray
     score: tuple[float, float]
-    last: float
-
-    def confirmed(self, until: float) -> bool:
-        return until - self.sample.time >= SETTINGS["short_dwell"] - 1e-8
+    last: Sample
 
 
 @dataclass
@@ -113,17 +98,37 @@ class Selection:
         }
 
 
-def brief(candidate: Candidate, reason: str, confirmed: bool) -> Selection:
-    flags = ("brief-state",)
-    if not confirmed:
-        flags += ("limited-dwell",)
+def ending_brief(
+    candidate: Candidate | None, reason: str, until: float | None = None
+) -> Selection | None:
+    if candidate is None:
+        return None
+    observed_end = candidate.last.end if until is None else until
+    global_delta, tile_delta = candidate.score
+    localized = global_delta <= SETTINGS["impulse_motion_ceiling"]
+    confirmed = observed_end - candidate.sample.time >= SETTINGS["short_dwell"] - 1e-8 and (
+        localized or candidate.last.time > candidate.sample.time
+    )
+    impulse = localized and (
+        global_delta >= SETTINGS["impulse_global"] or tile_delta >= SETTINGS["impulse_tile"]
+    )
+    if not (confirmed or impulse):
+        if until is None:
+            return Selection(
+                candidate.sample,
+                "end-of-video",
+                candidate.sample.time,
+                candidate.score,
+                ("unconfirmed-screen",),
+            )
+        return None
     return Selection(
         candidate.sample,
         reason,
         candidate.sample.time,
         candidate.score,
-        flags,
-        candidate.last,
+        ("brief-state",) if confirmed else ("brief-state", "limited-dwell"),
+        candidate.last.time,
     )
 
 
@@ -132,51 +137,50 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
     first = next(iterator, None)
     if first is None:
         return
-    reference = first.frame.to_ndarray(format="gray")
-    grid = TileGrid(reference.shape)
+    reference = first.frame.to_ndarray(format="rgb24")
+    grid = TileGrid(reference.shape[:2])
     yield Selection(first, "opening", first.time, (0, 0))
 
     candidate = None
     motion_since = None
     for sample in iterator:
-        gray = sample.frame.to_ndarray(format="gray")
-        confirmed = candidate is not None and candidate.confirmed(sample.time)
-        if gray.shape != reference.shape:
-            if candidate is not None and confirmed:
-                yield brief(candidate, "short-transition", confirmed)
+        pixels = sample.frame.to_ndarray(format="rgb24")
+        if pixels.shape != reference.shape:
+            if selection := ending_brief(candidate, "short-transition", sample.time):
+                yield selection
             yield Selection(sample, "resolution-change", sample.time, (1, 1))
-            reference, grid = gray, TileGrid(gray.shape)
+            reference, grid = pixels, TileGrid(pixels.shape[:2])
             candidate, motion_since = None, None
             continue
 
-        score = grid.difference(gray, reference)
+        score = grid.difference(pixels, reference)
         if not meaningful(score):
-            if candidate is not None and (confirmed or abrupt(candidate.score)):
-                yield brief(candidate, "short-return", confirmed)
-                score = grid.difference(gray, candidate.gray)
+            if candidate is not None and (
+                selection := ending_brief(candidate, "short-return", sample.time)
+            ):
+                yield selection
+                score = grid.difference(pixels, candidate.pixels)
                 yield Selection(sample, "reverted", sample.time, score)
-                reference = gray
+                reference = pixels
             candidate, motion_since = None, None
             continue
 
         if motion_since is None:
             motion_since = sample.time
         if candidate is None:
-            candidate = Candidate(sample, gray, score, sample.time)
-        elif similar(next_score := grid.difference(gray, candidate.gray)):
-            candidate.last = sample.time
+            candidate = Candidate(sample, pixels, score, sample)
+        elif similar(next_score := grid.difference(pixels, candidate.pixels)):
+            candidate.last = sample
         else:
-            if confirmed or (
-                localized_impulse(candidate.score) and localized_impulse(next_score)
-            ):
-                yield brief(candidate, "short-transition", confirmed)
-                reference = candidate.gray
+            if selection := ending_brief(candidate, "short-transition", sample.time):
+                yield selection
+                reference = candidate.pixels
                 score = next_score
                 motion_since = sample.time
                 if not meaningful(score):
                     candidate, motion_since = None, None
                     continue
-            candidate = Candidate(sample, gray, score, sample.time)
+            candidate = Candidate(sample, pixels, score, sample)
 
         if sample.time - candidate.sample.time >= SETTINGS["settled_dwell"] - 1e-8:
             reason = "settled" if strong(candidate.score) else "localized"
@@ -191,22 +195,14 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
             yield Selection(
                 sample,
                 "extended-motion",
-                sample.time,
+                motion_since,
                 score,
                 ("unsettled-screen",),
             )
         else:
             continue
-        reference = gray
+        reference = pixels
         candidate, motion_since = None, None
 
-    if candidate is not None and candidate.confirmed(candidate.last):
-        yield brief(candidate, "short-at-end", True)
-    elif candidate is not None:
-        yield Selection(
-            candidate.sample,
-            "end-of-video",
-            candidate.sample.time,
-            candidate.score,
-            ("unconfirmed-screen",),
-        )
+    if selection := ending_brief(candidate, "short-at-end"):
+        yield selection

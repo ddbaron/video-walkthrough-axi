@@ -108,6 +108,11 @@ class Sample:
     time: float
     frame: av.VideoFrame
 
+    @property
+    def end(self) -> float:
+        duration, time_base = self.frame.duration, self.frame.time_base
+        return self.time + float(duration * time_base) if duration and time_base else self.time
+
     def save(self, path: Path, crop: tuple | None = None) -> None:
         image = self.frame.to_image()
         if crop is not None:

@@ -63,6 +63,13 @@ def screen(state: str) -> Image.Image:
     elif state == "single-frame":
         draw.rounded_rectangle((482, 184, 582, 221), 6, fill="#203449")
         words(490, 193, "Price held", "#ffffff")
+    elif state == "full-confirmation":
+        draw.rectangle((0, 54, 639, 359), fill="#d3f2db")
+        draw.text((100, 158), "Reservation confirmed", font=bold, fill="#102c20")
+    elif state in {"ready-status", "warning-status"}:
+        color = "#008200" if state == "ready-status" else "#ff0000"
+        draw.rectangle((325, 181, 582, 229), fill=color)
+        words(345, 191, "Reservation status", "#ffffff")
     return image
 
 

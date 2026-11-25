@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from .bundle import event_time, load_timeline, local_artifact, read_manifest
+from .bundle import event_time, load_timeline, local_artifact, read_manifest, screen_time
 from .media import EvidenceError, digest
 
 TEXT_LIMIT = 500
@@ -118,7 +118,7 @@ def escape(text: str) -> str:
 
 
 def speech_by_frame(frames: list[dict], timeline: list[dict]) -> list[list[tuple[str, list]]]:
-    times = [frame["change_start"] for frame in frames]
+    times = [screen_time(frame) for frame in frames]
     # Slot zero contains speech before the first decoded screenshot, if any.
     slots = [[] for _ in range(len(times) + 1)]
     for event in timeline:

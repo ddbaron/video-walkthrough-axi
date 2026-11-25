@@ -77,12 +77,16 @@ def cached_manifest(root: Path, evidence: Path, cache_key: str) -> dict | None:
     return None
 
 
+def screen_time(frame: dict) -> float:
+    return frame["time"] if frame["reason"] == "extended-motion" else frame["change_start"]
+
+
 def event_time(event: dict) -> float:
-    return event["change_start"] if event["kind"] == "frame" else event["time"]
+    return screen_time(event) if event["kind"] == "frame" else event["time"]
 
 
 def merge(frames: list[dict], transcript: dict) -> list[dict]:
-    times = [f["change_start"] for f in frames]
+    times = [screen_time(frame) for frame in frames]
     events = [{"kind": "frame", **frame} for frame in frames]
     for segment in transcript["segments"]:
         index = bisect.bisect_right(times, segment["start"]) - 1

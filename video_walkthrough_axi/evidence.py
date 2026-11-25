@@ -30,7 +30,19 @@ OCR_SETTINGS = {"page_segmentation": 11, "language": "eng"}
 
 def fingerprint(path: Path, signatures: dict) -> str:
     resolved = path.resolve()
-    for entry in (path.parent, path, resolved.parent, resolved):
+    entries = {path.parent, path, resolved.parent, resolved}
+    pending = [path.absolute()]
+    visited = set()
+    while pending:
+        current = pending.pop()
+        for entry in (current, *current.parents):
+            if entry in visited:
+                continue
+            visited.add(entry)
+            if entry.is_symlink():
+                entries.update((entry, entry.parent))
+                pending.append(entry.parent / entry.readlink())
+    for entry in entries:
         signatures[entry] = device_signature(entry, follow_symlinks=False)
     return digest(resolved)
 
