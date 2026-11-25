@@ -19,6 +19,7 @@ SETTINGS = {
     "changed_global_fraction": 0.007,
     "changed_tile_fraction": 0.032,
     "comparison": "adjacent-and-screen",
+    "selection_priority": "held-before-transient",
     "screenshots_per_second": SCREENSHOTS_PER_SECOND,
     "motion_pause_seconds": MOTION_PAUSE_SECONDS,
 }
@@ -63,6 +64,7 @@ class Selection:
     excursion: bool = False
     between_changes: bool = False
     motion_start: float | None = None
+    held: bool = False
 
     def record(self) -> dict:
         frame = self.sample.frame
@@ -106,6 +108,7 @@ def screen_changes(samples: Iterable[Sample]) -> Iterator[Selection]:
                 last, pixels = sample, incoming
                 continue
 
+        held = sample.time >= start.time + MOTION_PAUSE_SECONDS
         excursion = False
         if start is not first:
             excursion = (
@@ -123,8 +126,9 @@ def screen_changes(samples: Iterable[Sample]) -> Iterator[Selection]:
                 excursion,
                 motion_start,
                 between_changes=starts_after_change and adjacent_change,
+                held=held,
             )
-        if start is first or excursion or last.time >= start.time + MOTION_PAUSE_SECONDS:
+        if start is first or excursion or held:
             motion_start = sample.time
         if incoming.shape != pixels.shape:
             reason = "resolution-change"
@@ -141,7 +145,10 @@ def screen_changes(samples: Iterable[Sample]) -> Iterator[Selection]:
         score = difference
 
     if start is not first:
-        yield screen_selection(start, last, reason, score, False, motion_start)
+        yield screen_selection(
+            start, last, reason, score, False, motion_start,
+            held=last.time >= start.time + MOTION_PAUSE_SECONDS,
+        )
 
 
 def screen_selection(
@@ -153,12 +160,14 @@ def screen_selection(
     motion_start: float,
     *,
     between_changes: bool = False,
+    held: bool,
 ) -> Selection:
     capture = start if reason in {"reverted", "resolution-change"} else last
     single = start is last
     flags = ("single-frame",) if single else ()
     return Selection(
-        capture, reason, start.time, score, flags, excursion, between_changes and single, motion_start
+        capture, reason, start.time, score, flags, excursion, between_changes and single,
+        motion_start, held,
     )
 
 
@@ -177,6 +186,7 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
         for index, screen in enumerate(screens):
             if (
                 screen.reason in {"opening", "resolution-change"}
+                or screen.held
                 or screen.excursion
                 or (screen.between_changes and not uninterrupted)
             ):
@@ -186,8 +196,10 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
                 if screen.motion_start != motion_run:
                     motion_run = screen.motion_start
                     motion_start = screen.onset
+        protected.sort(key=lambda item: (item[1].reason != "opening", not item[1].held))
+        del protected[SCREENSHOTS_PER_SECOND:]
         remaining = SCREENSHOTS_PER_SECOND - len(protected)
-        if len(motion) > max(remaining, 0):
+        if len(motion) > remaining:
             if remaining > 0:
                 protected.extend(motion[: remaining - 1])
                 index, latest = motion[-1]

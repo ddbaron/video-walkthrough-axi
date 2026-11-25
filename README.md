@@ -48,7 +48,7 @@ Times accept seconds, `MM:SS`, or `HH:MM:SS`, including fractional seconds. Comm
 
 Once dependencies and the model are installed, all four commands run offline without credentials. The tool loads the specified model from disk and opens the recording with local file protocols. OCR runs locally. The original video stays at its source path.
 
-Prepare and frame use a temporary private copy of the recording inside the bundle so the bytes they read match the verified hash. Allow enough space for that copy while either command runs.
+Prepare and frame use a private directory under the system temporary directory, outside the evidence bundle, to read a copy of the recording that matches the verified hash. Allow enough space there for the copy while either command runs.
 
 `manifest.json` identifies schema version 1, the source path and SHA-256, stream offsets, backend versions, model fingerprints, settings, and selection reasons. Referenced generations under `evidence/` contain the native PNGs, `transcript.json`, and `timeline.json`. The transcript stores words and their timestamps. The timeline keeps speech and frame events distinct and includes OCR words, confidence scores, and pixel boxes when available. Bundle times are relative to the recording origin, with that origin and the selected streams documented in the manifest.
 

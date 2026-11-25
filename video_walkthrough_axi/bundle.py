@@ -16,7 +16,16 @@ import av
 from . import __version__
 from .detect import SETTINGS, select_frames
 from .evidence import backend_config, screen_text, snapshot_inputs, transcribe
-from .media import EvidenceError, device_signature, digest, pick_frame, probe, run, samples, verify_png
+from .media import (
+    EvidenceError,
+    device_signature,
+    digest,
+    pick_frame,
+    probe,
+    run,
+    samples,
+    verify_png,
+)
 
 SCHEMA_VERSION = 1
 
@@ -50,7 +59,10 @@ def ensure_unchanged(path: Path, signature: tuple) -> None:
 
 @contextmanager
 def source_snapshot(source: Path, root: Path):
-    with tempfile.TemporaryDirectory(prefix=".source-", dir=root) as temporary:
+    scratch_root = Path(tempfile.gettempdir()).resolve()
+    if scratch_root.is_relative_to(root.resolve()):
+        raise EvidenceError("The system temporary directory must be outside the evidence bundle.")
+    with tempfile.TemporaryDirectory(prefix="video-walkthrough-", dir=scratch_root) as temporary:
         snapshot = Path(temporary) / f"recording{source.suffix}"
         with source.open("rb") as original, snapshot.open("wb") as copy:
             signature = device_signature(original.fileno())
@@ -236,7 +248,9 @@ def extract_frame(root: Path, at: float, crop: tuple | None) -> dict:
         raise EvidenceError("Source is unavailable. Rerun prepare with its current path.")
     with source_snapshot(source, root) as (recording, sha, signature):
         if sha != manifest["source"]["sha256"]:
-            raise EvidenceError("Source SHA-256 differs from the recording used to build this bundle.")
+            raise EvidenceError(
+                "Source SHA-256 differs from the recording used to build this bundle."
+            )
         sample = pick_frame(recording, manifest["media"], at)
         ensure_unchanged(source, signature)
     output = local_artifact(root, "extracts")

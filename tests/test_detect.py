@@ -93,6 +93,27 @@ def test_warning_survives_full_screenshot_bucket():
     assert [screen.sample.time for screen in select_frames(samples)] == [0, 0.1, 0.2]
 
 
+def test_held_warning_survives_transient_transitions():
+    states = ("baseline", "dropdown", "confirmation", "brief-warning", "brief-warning")
+    times = (0, 0.05, 0.1, 0.15, 0.95)
+    samples = [screen_sample(time, state) for time, state in zip(times, states, strict=True)]
+    selected = list(select_frames(samples))
+    assert any(item.sample is samples[4] for item in selected)
+    assert len(selected) <= 3
+
+
+def test_alternating_screens_stay_within_screenshot_cap():
+    samples = [
+        screen_sample(index / 10, "dropdown" if index % 2 else "baseline")
+        for index in range(21)
+    ]
+    counts = {}
+    for selection in select_frames(samples):
+        second = int(selection.sample.time)
+        counts[second] = counts.get(second, 0) + 1
+    assert max(counts.values()) <= 3
+
+
 @pytest.mark.parametrize("returns", [False, True])
 def test_gradual_color_change_reaches_held_screen(returns):
     shades = [100, 110, 120, 130, 130]
@@ -119,3 +140,14 @@ def test_motion_onset_resets_after_held_screen():
     motion = [change for change in select_frames(samples) if change.reason == "extended-motion"]
     assert [change.onset for change in motion] == [1.0, 2.3]
     assert motion[-1].sample.time == 2.9
+
+
+def test_variable_rate_hold_resets_motion_onset():
+    times = (0, 1.0, 1.1, 1.2, 1.3, 2.0, 2.1, 2.2, 2.3)
+    shades = (255, 0, 40, 80, 120, 160, 180, 200, 220)
+    samples = [
+        Sample(time, av.VideoFrame.from_image(Image.new("RGB", (64, 48), (shade,) * 3)))
+        for time, shade in zip(times, shades, strict=True)
+    ]
+    motion = [change for change in select_frames(samples) if change.reason == "extended-motion"]
+    assert [change.onset for change in motion] == [1.0, 2.0]

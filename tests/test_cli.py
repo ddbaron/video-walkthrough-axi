@@ -142,7 +142,16 @@ def test_source_directory_rollback_keeps_verified_recording(demo, tmp_path, monk
     source = active / "input.mp4"
     shutil.copyfile(original, source)
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(original), "-vf", "negate", str(alternate / source.name)],
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(original),
+            "-vf",
+            "negate",
+            str(alternate / source.name),
+        ],
         check=True,
     )
     bundle = tmp_path / "bundle"
