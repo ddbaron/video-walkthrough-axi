@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-walkthrough-axi"
+version = "0.1.0"
+description = "Build local evidence bundles and draft walkthroughs from software recordings."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["av>=14,<20", "numpy>=1.26,<3", "Pillow>=10,<13", "toon-format>=1.2,<2"]
+
+[project.optional-dependencies]
+mlx = ["mlx-whisper>=0.4.3,<0.5"]
+dev = ["build>=1", "pytest>=8", "ruff>=0.11"]
+
+[project.urls]
+Repository = "https://github.com/ddbaron/video-walkthrough-axi"
+
+[project.scripts]
+video-walkthrough-axi = "video_walkthrough_axi.cli:main"
+
+[tool.setuptools]
+packages = ["video_walkthrough_axi"]
+
+[tool.setuptools.data-files]
+"share/video-walkthrough-axi/skills/video-walkthrough" = ["skills/video-walkthrough/SKILL.md"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

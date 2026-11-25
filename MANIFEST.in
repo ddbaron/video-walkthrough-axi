@@ -1,0 +1,2 @@
+include acceptance.sh
+recursive-include tests *.py
