@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -5,12 +6,25 @@ import shutil
 import subprocess
 import sys
 
+import av
 import pytest
 import toon_format
-from demo_recording import AMOUNT_CROP, FPS, SIZE, STATES, make_recording
+from demo_recording import (
+    AMOUNT_CROP,
+    FPS,
+    QUIET_APPROVAL_END,
+    QUIET_APPROVAL_START,
+    SIZE,
+    STATES,
+    make_recording,
+    screen,
+)
 from PIL import Image
 
-from video_walkthrough_axi.media import digest
+from video_walkthrough_axi import bundle as bundles
+from video_walkthrough_axi import evidence
+from video_walkthrough_axi.detect import select_frames
+from video_walkthrough_axi.media import EvidenceError, Sample
 
 
 def cli(*args, code=0):
@@ -57,7 +71,7 @@ def test_native_coverage_and_manifest(demo):
     manifest = manifest_of(bundle)
     frames = manifest["frames"]
     assert manifest["schema_version"] == 1
-    assert manifest["source"]["sha256"] == digest(source)
+    assert manifest["source"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert manifest["media"]["streams"][0]["offset"] == 0
     assert "no-audio-stream" in manifest["flags"]
     assert len(frames) < 15
@@ -66,13 +80,37 @@ def test_native_coverage_and_manifest(demo):
         assert matches, name
         if name in {"dropdown", "confirmation", "single-frame"}:
             assert any(f["reason"] == "short-return" for f in matches), name
+        if name == "approval-indicator":
+            assert matches[0]["reason"] == "short-transition"
     assert [f["time"] for f in frames] == sorted({f["time"] for f in frames})
     for frame in frames:
         path = bundle / frame["path"]
-        assert digest(path) == frame["sha256"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == frame["sha256"]
         with Image.open(path) as png:
             assert png.size == SIZE
             assert png.format == "PNG"
+
+
+@pytest.mark.parametrize(
+    ("ending", "expected"),
+    [
+        ([], [(0.1, "end-of-video")]),
+        ([(0.2, "approval-indicator")], [(0.1, "short-at-end")]),
+        (
+            [(0.2, "approval-indicator"), (0.3, "smaller")],
+            [(0.1, "short-transition"), (0.3, "resolution-change")],
+        ),
+    ],
+)
+def test_localized_screen_at_end_or_resolution_change(ending, expected):
+    samples = []
+    for time, state in [(0.0, "baseline"), (0.1, "approval-indicator"), *ending]:
+        image = screen(state)
+        if state == "smaller":
+            image = image.resize((320, 180))
+        samples.append(Sample(time, av.VideoFrame.from_image(image)))
+    selections = list(select_frames(samples))
+    assert [(item.sample.time, item.reason) for item in selections[1:]] == expected
 
 
 def test_inspect_cursor_and_markdown(demo):
@@ -100,10 +138,12 @@ def test_inspect_cursor_and_markdown(demo):
         )
         events += page["events"]
     assert [e["time"] for e in events] == sorted({e["time"] for e in events})
+    frames = manifest_of(bundle)["frames"]
+    assert [e["path"] for e in events] == [f["path"] for f in frames if 1 <= f["time"] <= 10]
     assert all(e["speech"] is None and e["ocr"] is None for e in events)
     md = cli("walkthrough", bundle)
     links = re.findall(r"\[Screenshot at .*?\]\((.*?)\)", md)
-    assert links == [f["path"] for f in manifest_of(bundle)["frames"]]
+    assert links == [f["path"] for f in frames]
     assert all((bundle / path).is_file() for path in links)
     assert "**Speech**" in md and "**On-screen text**" in md
 
@@ -122,6 +162,87 @@ def test_cache_checks_artifacts_and_source_identity(demo, tmp_path):
     with source.open("ab") as file:
         file.write(b"changed")
     assert "SHA-256 differs" in toon("frame", bundle, "--at", 0, code=1)["error"]
+
+
+def test_readers_reject_replaced_evidence(demo, tmp_path):
+    _, original = demo
+    bundle = tmp_path / "bundle"
+    shutil.copytree(original, bundle)
+    manifest = manifest_of(bundle)
+    frames = manifest["frames"]
+    (bundle / frames[0]["path"]).write_bytes((bundle / frames[1]["path"]).read_bytes())
+    assert "screenshot SHA-256 differs" in toon("walkthrough", bundle, code=1)["error"]
+
+    timeline = bundle / manifest["artifacts"]["timeline"]["path"]
+    timeline.write_text("[]\n")
+    assert "timeline SHA-256 differs" in toon("walkthrough", bundle, code=1)["error"]
+    result = toon("inspect", bundle, "--from", 0, "--to", 10, code=1)
+    assert "timeline SHA-256 differs" in result["error"]
+
+
+def test_narration_uses_screen_onset(demo, tmp_path, monkeypatch):
+    source, _ = demo
+    bundle = tmp_path / "narrated"
+    segments = [
+        {
+            "start": 4.4,
+            "end": 4.7,
+            "text": "Continue carefully",
+            "words": [{"start": 4.4, "text": "Continue"}, {"start": 4.6, "text": " carefully"}],
+            "flags": [],
+        },
+        {"start": 4.65, "end": 4.8, "text": "Approval needed", "words": [], "flags": []},
+    ]
+    monkeypatch.setattr(
+        bundles, "transcribe", lambda *_: {"language": "en", "segments": segments, "flags": []}
+    )
+    bundles.prepare(source, bundle, None, "off")
+
+    page = toon("inspect", bundle, "--from", 4.55, "--to", 4.8)
+    warning = page["preceding_screen"]
+    assert warning["change_start"] == STATES["warning"][0] / FPS
+    assert warning["time"] > 4.8
+    indicator = next(
+        frame
+        for frame in manifest_of(bundle)["frames"]
+        if frame["time"] == STATES["approval-indicator"][0] / FPS
+    )
+    assert page["events"][0]["preceding_frame"] == indicator["path"]
+    assert page["events"][1]["preceding_frame"] == warning["path"]
+    steps = cli("walkthrough", bundle).split("\n## ")
+    warning_index = next(i for i, step in enumerate(steps) if warning["path"] in step)
+    assert "- Continue\n" in steps[warning_index - 1]
+    assert "- carefully\n" in steps[warning_index]
+    assert "- Approval needed\n" in steps[warning_index]
+
+
+def test_prepare_rejects_ocr_data_change(demo, tmp_path, monkeypatch):
+    source, _ = demo
+    bundle = tmp_path / "bundle"
+    initial = toon("prepare", source, "--out", bundle, "--ocr", "off")
+    assert not initial["cache_hit"]
+    manifest = manifest_of(bundle)
+    traineddata = tmp_path / "eng.traineddata"
+    traineddata.write_bytes(b"original")
+    monkeypatch.setattr(evidence.shutil, "which", lambda _: "tesseract")
+    monkeypatch.setattr(
+        evidence,
+        "run",
+        lambda command: f'List of available languages in "{tmp_path}" (1):\neng'
+        if command[-1] == "--list-langs"
+        else "tesseract test",
+    )
+
+    def change_language_data(paths, *, enabled):
+        assert enabled
+        traineddata.write_bytes(b"replacement")
+        return [{"text": "", "words": [], "flags": []} for _ in paths]
+
+    monkeypatch.setattr(bundles, "screen_text", change_language_data)
+    with pytest.raises(EvidenceError, match="backend inputs changed"):
+        bundles.prepare(source, bundle, None, "auto")
+    assert manifest_of(bundle) == manifest
+    assert len(list((bundle / "evidence").iterdir())) == 1
 
 
 def test_frame_crops_and_nearest_timestamp(demo):
@@ -148,7 +269,7 @@ def test_ocr_amount_and_warning(demo, tmp_path):
     bundle = tmp_path / "ocr"
     assert not toon("prepare", source, "--out", bundle, "--ocr", "off")["cache_hit"]
     without_ocr = manifest_of(bundle)
-    summary = toon("prepare", source, "--out", bundle, "--ocr", "tesseract")
+    summary = toon("prepare", source, "--out", bundle, "--ocr", "auto")
     assert not summary["cache_hit"]
     assert summary["ocr_frames"] == summary["frames"]
     page = toon("inspect", bundle, "--from", 0, "--to", 12, "--limit", 100)
@@ -174,8 +295,6 @@ def test_real_mlx_narration(tmp_path):
         bundle,
         "--model",
         os.environ["VIDEO_WALKTHROUGH_TEST_MODEL"],
-        "--language",
-        "en",
         "--ocr",
         "off",
     )
@@ -184,8 +303,13 @@ def test_real_mlx_narration(tmp_path):
     path = manifest["artifacts"]["transcript"]["path"]
     segments = json.loads((bundle / path).read_text())["segments"]
     assert any(segment["words"] for segment in segments)
-    assert any("approval" in segment["text"].lower() for segment in segments)
-    assert any("quiet-audio" in segment["flags"] for segment in segments)
+    assert any(
+        "approval" in segment["text"].lower()
+        and "quiet-audio" in segment["flags"]
+        and segment["start"] < QUIET_APPROVAL_END
+        and segment["end"] > QUIET_APPROVAL_START
+        for segment in segments
+    )
     assert all(
         segment["start"] <= w["start"] <= w["end"] <= segment["end"]
         for segment in segments

@@ -21,21 +21,23 @@ For audio, download a local MLX Whisper model once. The following example uses a
 ```sh
 hf download mlx-community/whisper-large-v3-turbo-q4 config.json weights.npz \
   --local-dir "$HOME/.local/share/video-walkthrough-axi/whisper"
-export VIDEO_WALKTHROUGH_MODEL="$HOME/.local/share/video-walkthrough-axi/whisper"
 ```
 
-`hf` is installed with the `mlx` extra. An existing MLX Whisper directory with a `config.json` and `weights.safetensors` or `weights.npz` also works. Pass its local path with `--model DIR` or the environment variable above.
+`hf` is installed with the `mlx` extra. An existing MLX Whisper directory with a `config.json` and `weights.safetensors` or `weights.npz` also works. Pass its local path with `--model DIR`.
 
 ## Commands
 
 ```sh
-video-walkthrough-axi prepare recording.mp4 --out ./bundle
-video-walkthrough-axi inspect ./bundle --from 00:10 --to 00:25 --limit 10
-video-walkthrough-axi frame ./bundle --at 00:15.250 --crop 400,160,240,90
-video-walkthrough-axi walkthrough ./bundle > ./bundle/walkthrough.md
+private_dir="$HOME/Documents/walkthrough-evidence"
+bundle="$private_dir/bundle"
+video-walkthrough-axi prepare "$private_dir/recording.mp4" --out "$bundle" \
+  --model "$HOME/.local/share/video-walkthrough-axi/whisper"
+video-walkthrough-axi inspect "$bundle" --from 00:10 --to 00:25 --limit 10
+video-walkthrough-axi frame "$bundle" --at 00:15.250 --crop 400,160,240,90
+video-walkthrough-axi walkthrough "$bundle" > "$bundle/walkthrough.md"
 ```
 
-- **`prepare FILE --out DIR`** scans decoded frames at native resolution, combining a tile and dwell detector with a pass for short screen states. It builds a private evidence bundle, adds word-timed speech when an audio stream is present, and publishes the manifest after validating the artifacts. `--language en` selects English speech when appropriate. `--ocr auto` uses Tesseract if available. Use `--ocr tesseract` to require it or `--ocr off` to skip it. An existing bundle can reuse evidence keyed by source SHA-256, settings, and backend and model versions.
+- **`prepare FILE --out DIR`** scans decoded frames at native resolution, combining a tile and dwell detector with a pass for short screen states. It builds a private evidence bundle, detects the speech language automatically when an audio stream is present, and publishes the manifest after validating the artifacts. `--ocr auto` uses Tesseract if available. Use `--ocr off` to skip it. An existing bundle can reuse evidence keyed by source SHA-256, settings, and backend and model versions.
 - **`inspect BUNDLE --from TIME --to TIME`** returns events in recording order with the preceding screenshot, where available. It includes separate speech and OCR previews. Follow `next_cursor` with `--cursor` and the same window. The default limit is 20 events, with a maximum of 100 per page. Previews are capped at 500 characters per evidence field. Open the recorded timeline path for full text and OCR word boxes.
 - **`frame BUNDLE --at TIME`** checks the source SHA-256 and saves a native PNG under `BUNDLE/extracts/`. The result includes the actual presentation timestamp, source PTS and time base, and whether the chosen frame was exact or nearest. For `--crop X,Y,W,H`, use source pixel coordinates from the upper left before any player rotation or scaling.
 - **`walkthrough BUNDLE`** prints ordered Markdown steps with screenshot links, speech, and on-screen text. Save the Markdown in the bundle directory so its relative image links resolve.

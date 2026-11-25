@@ -143,6 +143,8 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
     for sample in iterator:
         gray = sample.frame.to_ndarray(format="gray")
         if gray.shape != reference.shape:
+            if candidate is not None and candidate.confirmed:
+                yield brief(candidate, "short-transition")
             yield Selection(sample, "resolution-change", sample.time, (1, 1))
             reference, grid = gray, TileGrid(gray.shape)
             candidate, motion_since = None, None
@@ -162,18 +164,19 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
             motion_since = sample.time
         if candidate is None:
             candidate = Candidate(sample, gray, score, sample.time)
-        elif similar(grid.difference(gray, candidate.gray)):
+        elif similar(next_score := grid.difference(gray, candidate.gray)):
             candidate.last = sample.time
         else:
-            if candidate.confirmed or abrupt(candidate.score):
-                next_score = grid.difference(gray, candidate.gray)
-                supported = candidate.confirmed and strong(candidate.score) and strong(next_score)
-                impulse = localized_impulse(candidate.score) and localized_impulse(next_score)
-                if supported or impulse:
-                    yield brief(candidate, "short-transition")
-                    reference = candidate.gray
-                    score = next_score
-                    motion_since = sample.time
+            if candidate.confirmed or (
+                localized_impulse(candidate.score) and localized_impulse(next_score)
+            ):
+                yield brief(candidate, "short-transition")
+                reference = candidate.gray
+                score = next_score
+                motion_since = sample.time
+                if not meaningful(score):
+                    candidate, motion_since = None, None
+                    continue
             candidate = Candidate(sample, gray, score, sample.time)
 
         if sample.time - candidate.sample.time >= SETTINGS["settled_dwell"] - 1e-8:
@@ -181,7 +184,7 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
             yield Selection(
                 sample,
                 reason,
-                motion_since,
+                candidate.sample.time,
                 score,
                 last_observed=sample.time,
             )
@@ -200,7 +203,7 @@ def select_frames(samples: Iterable[Sample]) -> Iterator[Selection]:
 
     if candidate is not None and candidate.confirmed:
         yield brief(candidate, "short-at-end")
-    elif candidate is not None and strong(candidate.score):
+    elif candidate is not None:
         yield Selection(
             candidate.sample,
             "end-of-video",

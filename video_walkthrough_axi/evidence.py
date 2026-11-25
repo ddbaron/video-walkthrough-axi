@@ -31,14 +31,13 @@ OCR_SETTINGS = {"page_segmentation": 11, "language": "eng"}
 def backend_config(
     media: dict,
     model: Path | None,
-    language: str | None,
     ocr: str,
 ) -> tuple[dict, dict]:
     settings = {"asr": None, "ocr": None}
     backends = {"asr": None, "ocr": None}
     if len(media["streams"]) > 1:
         if model is None or not (model / "config.json").is_file():
-            raise EvidenceError("Audio requires --model DIR (or VIDEO_WALKTHROUGH_MODEL).")
+            raise EvidenceError("Audio requires --model DIR.")
         weights = next(
             (model / f for f in ("weights.safetensors", "weights.npz") if (model / f).is_file()),
             None,
@@ -50,7 +49,7 @@ def backend_config(
             mlx = version("mlx")
         except PackageNotFoundError as error:
             raise EvidenceError("Install video-walkthrough-axi[mlx] on Apple Silicon.") from error
-        settings["asr"] = {**ASR_SETTINGS, "language": language}
+        settings["asr"] = ASR_SETTINGS
         backends["asr"] = {
             "name": "mlx-whisper",
             "version": mlx_whisper,
@@ -61,7 +60,7 @@ def backend_config(
                 "weights_sha256": digest(weights),
             },
         }
-    if ocr == "tesseract" or (ocr == "auto" and shutil.which("tesseract")):
+    if ocr == "auto" and shutil.which("tesseract"):
         language_sha256 = tesseract_language_digest()
         if language_sha256:
             settings["ocr"] = OCR_SETTINGS
@@ -70,8 +69,6 @@ def backend_config(
                 "version": run(["tesseract", "--version"]).splitlines()[0],
                 "language_sha256": language_sha256,
             }
-        elif ocr == "tesseract":
-            raise EvidenceError(f"Install Tesseract language data for {OCR_SETTINGS['language']}.")
     settings["ocr_request"] = ocr
     return settings, backends
 
@@ -190,7 +187,6 @@ def transcribe(
     source: Path,
     media: dict,
     model: Path | None,
-    language: str | None,
     wav: Path,
 ) -> dict:
     if len(media["streams"]) == 1:
@@ -210,7 +206,6 @@ def transcribe(
             raw = mlx_whisper.transcribe(
                 pcm.astype(np.float32) / 32768,
                 path_or_hf_repo=str(model),
-                language=language,
                 task="transcribe",
                 word_timestamps=ASR_SETTINGS["word_timestamps"],
                 condition_on_previous_text=ASR_SETTINGS["condition_on_previous_text"],

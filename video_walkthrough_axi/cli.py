@@ -87,12 +87,11 @@ def parser() -> EvidenceParser:
         "--model",
         type=Path,
         metavar="DIR",
-        help="local MLX Whisper model; defaults to VIDEO_WALKTHROUGH_MODEL",
+        help="local MLX Whisper model",
     )
-    setup.add_argument("--language", metavar="CODE", help="speech language code; auto-detected")
     setup.add_argument(
         "--ocr",
-        choices=("auto", "tesseract", "off"),
+        choices=("auto", "off"),
         default="auto",
         help="auto uses Tesseract when installed (default: auto)",
     )
@@ -133,15 +132,11 @@ def main() -> int:
     try:
         match args.command:
             case "prepare":
-                model = args.model
-                if model is None and (model_dir := os.environ.get("VIDEO_WALKTHROUGH_MODEL")):
-                    model = Path(model_dir)
                 output(
                     prepare(
                         args.file.resolve(),
                         args.out.resolve(),
-                        model.resolve() if model else None,
-                        args.language,
+                        args.model.resolve() if args.model is not None else None,
                         args.ocr,
                     )
                 )

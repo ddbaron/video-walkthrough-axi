@@ -13,11 +13,14 @@ SECONDS = 12
 STATES = {
     "dropdown": (36, 42),
     "confirmation": (72, 75),
+    "approval-indicator": (105, 108),
     "warning": (108, 144),
     "single-frame": (157, 158),
     "result": (192, FPS * SECONDS),
 }
 AMOUNT_CROP = (390, 105, 192, 56)
+QUIET_APPROVAL_START = 4.6
+QUIET_APPROVAL_END = 7.0
 
 
 def screen(state: str) -> Image.Image:
@@ -49,6 +52,8 @@ def screen(state: str) -> Image.Image:
     elif state == "confirmation":
         draw.rounded_rectangle((325, 181, 582, 229), 6, fill="#d3f2db")
         draw.text((345, 191), "Selection saved", font=bold, fill="#102c20")
+    elif state == "approval-indicator":
+        draw.rectangle((492, 184, 500, 191), fill="#203449")
     elif state == "warning":
         draw.rounded_rectangle((44, 240, 420, 308), 6, fill="#ffe4a2")
         draw.text((61, 247), "Warning", font=bold, fill="#271301")
@@ -126,7 +131,8 @@ def make_recording(output: Path, narration: bool = False) -> None:
                     "-i",
                     str(final),
                     "-filter_complex",
-                    "[1:a]volume=-29dB,adelay=4600[q];[2:a]adelay=8050[f];"
+                    f"[1:a]volume=-29dB,adelay={round(QUIET_APPROVAL_START * 1000)}[q];"
+                    "[2:a]adelay=8050[f];"
                     f"[0:a][q][f]amix=inputs=3:normalize=0,apad=whole_dur={SECONDS}[a]",
                     "-map",
                     "[a]",

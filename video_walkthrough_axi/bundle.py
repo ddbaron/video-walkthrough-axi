@@ -83,7 +83,7 @@ def cached_manifest(root: Path, evidence: Path, cache_key: str) -> dict | None:
 
 
 def merge(frames: list[dict], transcript: dict) -> list[dict]:
-    times = [f["time"] for f in frames]
+    times = [f["change_start"] for f in frames]
     events = [{"kind": "frame", **frame} for frame in frames]
     for segment in transcript["segments"]:
         index = bisect.bisect_right(times, segment["start"]) - 1
@@ -122,14 +122,7 @@ def build(staging: Path, name: str, source: Path, manifest: dict, model: Path | 
     if not frames:
         raise EvidenceError("The source contains no decodable video frames.")
 
-    asr = settings["asr"]
-    transcript = transcribe(
-        source,
-        media,
-        model,
-        asr["language"] if asr else None,
-        staging / "audio.tmp.wav",
-    )
+    transcript = transcribe(source, media, model, staging / "audio.tmp.wav")
     ocr = screen_text(paths, enabled=settings["ocr"] is not None)
     timeline = merge(
         [dict(frame, ocr=text) for frame, text in zip(frames, ocr, strict=True)], transcript
@@ -156,29 +149,26 @@ def build(staging: Path, name: str, source: Path, manifest: dict, model: Path | 
         manifest["artifacts"][key] = {"path": f"{prefix}/{path.name}", "sha256": digest(path)}
 
 
-def prepare(source: Path, root: Path, model: Path | None, language: str | None, ocr: str) -> dict:
+def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
     if not source.is_file():
         raise EvidenceError("Provide a regular, local recording file.")
     signature = device_signature(source)
     sha = digest(source)
     media = probe(source)
-    settings, backends = backend_config(media, model, language, ocr)
-    settings["detector"] = SETTINGS
-    backends.update(
-        {
+    settings, evidence_backends = backend_config(media, model, ocr)
+    config = {
+        "schema_version": SCHEMA_VERSION,
+        "generator_version": __version__,
+        "settings": {**settings, "detector": SETTINGS},
+        "backends": {
+            **evidence_backends,
             "ffmpeg": run(["ffmpeg", "-version"]).splitlines()[0],
             "ffprobe": run(["ffprobe", "-version"]).splitlines()[0],
             "pyav": av.__version__,
             "libav": {k: ".".join(map(str, v)) for k, v in av.library_versions.items()},
             "pillow": version("Pillow"),
             "numpy": version("numpy"),
-        }
-    )
-    config = {
-        "schema_version": SCHEMA_VERSION,
-        "generator_version": __version__,
-        "settings": settings,
-        "backends": backends,
+        },
     }
     cache_key = hashlib.sha256(json.dumps([sha, config], sort_keys=True).encode()).hexdigest()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -204,6 +194,8 @@ def prepare(source: Path, root: Path, model: Path | None, language: str | None, 
                 staging = Path(tmp)
                 name = f"{cache_key}-{staging.name.removeprefix('.stage-')}"
                 build(staging, name, source, manifest, model)
+                if backend_config(media, model, ocr) != (settings, evidence_backends):
+                    raise EvidenceError("Speech or OCR backend inputs changed during processing.")
                 ensure_unchanged(source, signature)
                 write_json(staging / "manifest.json", manifest)
                 staging.rename(evidence / name)
@@ -254,4 +246,8 @@ def extract_frame(root: Path, at: float, crop: tuple | None) -> dict:
 
 
 def load_timeline(root: Path, manifest: dict) -> list[dict]:
-    return read_json(local_artifact(root, manifest["artifacts"]["timeline"]["path"]))
+    artifact = manifest["artifacts"]["timeline"]
+    data = local_artifact(root, artifact["path"]).read_bytes()
+    if hashlib.sha256(data).hexdigest() != artifact["sha256"]:
+        raise EvidenceError(f"Bundle timeline SHA-256 differs: {artifact['path']}")
+    return json.loads(data)
