@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 from fractions import Fraction
+from pathlib import Path
 
 import av
 import pytest
@@ -22,7 +23,6 @@ from demo_recording import (
 from PIL import Image, ImageChops, ImageStat
 
 from video_walkthrough_axi import bundle as bundles
-from video_walkthrough_axi import evidence
 from video_walkthrough_axi.media import Sample
 
 
@@ -332,9 +332,22 @@ def test_frame_crops_and_nearest_timestamp(demo):
     assert "exceeds" in toon("frame", bundle, "--at", 0, "--crop", "639,0,2,5", code=1)["error"]
 
 
+def tesseract_english_data():
+    tesseract = shutil.which("tesseract")
+    if tesseract is None:
+        return None
+    listing = subprocess.run(
+        [tesseract, "--list-langs"], capture_output=True, text=True, check=False
+    )
+    lines = listing.stdout.splitlines()
+    if listing.returncode or not lines or '"' not in lines[0]:
+        return None
+    traineddata = Path(lines[0].split('"')[1]) / "eng.traineddata"
+    return traineddata if traineddata.is_file() else None
+
+
 def test_ocr_amount_and_warning(demo, tmp_path):
-    traineddata = evidence.tesseract_language_file()
-    if traineddata is None or not traineddata.is_file():
+    if tesseract_english_data() is None:
         pytest.skip("requires Tesseract with English language data")
     source, _ = demo
     bundle = tmp_path / "ocr"

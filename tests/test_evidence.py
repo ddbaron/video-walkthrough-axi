@@ -10,6 +10,34 @@ from video_walkthrough_axi.evidence import audio_pcm
 from video_walkthrough_axi.media import EvidenceError, probe
 
 
+def test_one_quiet_word_flags_loud_segment():
+    rate = evidence.ASR_SETTINGS["sample_rate"]
+    duration = 2.0
+    pcm = np.full(int(duration * rate), int(0.05 * 32767), dtype="<i2")
+    quiet_start, quiet_end = 0.5, 0.7
+    pcm[int(quiet_start * rate) : int(quiet_end * rate)] = int(0.003 * 32767)
+    raw = {
+        "segments": [
+            {
+                "start": 0.0,
+                "end": duration,
+                "text": "the total is thirty two",
+                "avg_logprob": -0.1,
+                "no_speech_prob": 0.0,
+                "words": [
+                    {"start": 0.1, "end": 0.3, "word": " the", "probability": 0.9},
+                    {"start": quiet_start, "end": quiet_end, "word": " total", "probability": 0.9},
+                    {"start": 0.9, "end": 1.1, "word": " thirty", "probability": 0.9},
+                ],
+            }
+        ]
+    }
+    segment = evidence.normalized_speech(raw, pcm)[0]
+    assert segment["rms_dbfs"] >= evidence.ASR_SETTINGS["quiet_dbfs"]
+    assert segment["words"][1]["rms_dbfs"] < evidence.ASR_SETTINGS["quiet_dbfs"]
+    assert "quiet-audio" in segment["flags"]
+
+
 @pytest.mark.parametrize(
     "change", ["replacement", "rollback", "intermediate-link", "ordinary-ancestor", "unrelated"]
 )
@@ -111,6 +139,18 @@ def test_unusable_tesseract_leaves_ocr_unavailable(monkeypatch, listing):
     assert settings == {"asr": None, "ocr": None, "ocr_request": "auto"}
     assert backends == {"asr": None, "ocr": None}
     assert inputs == {}
+
+
+def test_tesseract_language_file_reads_quoted_directory(tmp_path, monkeypatch):
+    data = tmp_path / "tessdata"
+    data.mkdir()
+    (data / "eng.traineddata").write_bytes(b"data")
+    monkeypatch.setattr(
+        evidence,
+        "run",
+        lambda command: f'List of available languages in "{data}" (1):\neng',
+    )
+    assert evidence.tesseract_language_file() == data / "eng.traineddata"
 
 
 def test_tesseract_literal_quote_preserves_word_boxes(tmp_path, monkeypatch):

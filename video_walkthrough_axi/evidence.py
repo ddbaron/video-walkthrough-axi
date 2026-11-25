@@ -187,7 +187,7 @@ def normalized_speech(raw: dict, pcm: np.ndarray) -> list[dict]:
         logprob = float(segment.get("avg_logprob", 0))
         no_speech = float(segment.get("no_speech_prob", 0))
         flags = []
-        if dbfs < quiet or any(a and b for a, b in zip(quiet_words, quiet_words[1:], strict=False)):
+        if dbfs < quiet or any(quiet_words):
             flags.append("quiet-audio")
         if logprob < ASR_SETTINGS["low_logprob"]:
             flags.append("low-asr-confidence")
