@@ -44,10 +44,20 @@ def screen(state: str) -> Image.Image:
     draw.polygon(((230, 198), (244, 198), (237, 205)), fill="#3f5373")
     draw.rounded_rectangle((452, 251, 582, 287), 5, fill="#235cca")
     words(473, 259, "Reserve", "#ffffff")
+    _draw_overlay(state, draw, regular, bold)
+    return image
+
+
+def _draw_overlay(
+    state: str,
+    draw: ImageDraw.ImageDraw,
+    regular: ImageFont.FreeTypeFont,
+    bold: ImageFont.FreeTypeFont,
+) -> None:
     if state == "dropdown":
         draw.rounded_rectangle((48, 222, 260, 298), 6, fill="#203449")
-        words(62, 231, "Standard", "#ffffff")
-        words(62, 263, "Compact", "#ffffff")
+        draw.text((62, 231), "Standard", font=regular, fill="#ffffff")
+        draw.text((62, 263), "Compact", font=regular, fill="#ffffff")
     elif state == "confirmation":
         draw.rounded_rectangle((325, 181, 582, 229), 6, fill="#d3f2db")
         draw.text((345, 191), "Selection saved", font=bold, fill="#102c20")
@@ -61,18 +71,17 @@ def screen(state: str) -> Image.Image:
         draw.text((61, 275), "Supervisor approval required", font=bold, fill="#271301")
     elif state == "brief-warning":
         draw.rectangle((44, 240, 235, 299), fill="#ffe4a2")
-        words(56, 254, "Approval required")
+        draw.text((56, 254), "Approval required", font=regular, fill="#18263b")
     elif state == "single-frame":
         draw.rounded_rectangle((482, 184, 582, 221), 6, fill="#203449")
-        words(490, 193, "Price held", "#ffffff")
+        draw.text((490, 193), "Price held", font=regular, fill="#ffffff")
     elif state == "full-confirmation":
         draw.rectangle((0, 54, 639, 359), fill="#d3f2db")
         draw.text((100, 158), "Reservation confirmed", font=bold, fill="#102c20")
     elif state in {"ready-status", "warning-status"}:
         color = "#008200" if state == "ready-status" else "#ff0000"
         draw.rectangle((325, 181, 582, 229), fill=color)
-        words(345, 191, "Reservation status", "#ffffff")
-    return image
+        draw.text((345, 191), "Reservation status", font=regular, fill="#ffffff")
 
 
 def make_recording(output: Path, narration: bool = False) -> None:

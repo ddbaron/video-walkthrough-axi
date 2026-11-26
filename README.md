@@ -59,6 +59,17 @@ Bundles, terminal output, crops and derived drafts may contain private material.
 
 Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. The detector skips small, localized cursor-sized changes and compares retained candidates against the last emitted screenshot. It condenses short fades and bursts of large visual changes to the settled endpoint, with priority for held screens and brief excursions that return to the previous state. Sustained motion remains capped at three screenshots per recording second. When sustained motion is thinned, the latest retained motion screenshot carries the `extended-motion` reason and an `unsettled-screen` flag. Its change start follows the observed motion across seconds and resets after a held screen. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
 
-## Acceptance checks
+## Checks
 
-With FFmpeg on `PATH`, install the development tools with `python -m pip install -e '.[dev]'` and run `python -m pytest`. The tests generate a fictional software demo with a dropdown, a brief confirmation, a warning, and dollar amounts. OCR checks run when Tesseract and English language data are installed. To include the macOS `say` narration and quiet speech check, install the `mlx` extra and set `VIDEO_WALKTHROUGH_TEST_MODEL` to a local model directory before running the checks.
+Run these commands from the repository root. Put FFmpeg and FFprobe on `PATH` before running pytest. The [GitHub Actions workflow](.github/workflows/checks.yml) lists the CI runners and the pinned Ruff version.
+
+```sh
+python -m pip install -e '.[dev]'
+python -m ruff check .
+python -m pytest
+python scripts/check_file_size.py
+```
+
+See the [Ruff configuration](pyproject.toml) for the complexity limit and the [size checker](scripts/check_file_size.py) for how it counts code lines in tracked Python files that are present in the working tree.
+
+The tests generate a fictional software demo with a dropdown, a brief confirmation, a warning, and dollar amounts. OCR checks run when Tesseract and English language data are installed. To include the macOS `say` narration and quiet speech check, install the `mlx` extra and set `VIDEO_WALKTHROUGH_TEST_MODEL` to a local model directory before running the checks.
