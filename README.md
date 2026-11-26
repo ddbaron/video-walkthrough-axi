@@ -61,16 +61,15 @@ Distinct screens can be captured even when visible for one frame. The `single-fr
 
 ## Checks
 
-Run these commands from the repository root. Put FFmpeg and FFprobe on `PATH` before running pytest.
+Run these commands from the repository root. Put FFmpeg and FFprobe on `PATH` before running pytest. The [GitHub Actions workflow](.github/workflows/checks.yml) lists the CI runners and the pinned Ruff version.
 
 ```sh
-python -m pip install 'ruff==0.17.4'
-python -m ruff check .
 python -m pip install -e '.[dev]'
+python -m ruff check .
 python -m pytest
 python scripts/check_file_size.py
 ```
 
-Ruff enforces a maximum function complexity of 10. The size check allows up to 999 non-blank, non-comment lines per tracked Python file.
+See the [Ruff configuration](pyproject.toml) for the complexity limit and the [size checker](scripts/check_file_size.py) for how it counts code lines in tracked Python files that are present in the working tree.
 
 The tests generate a fictional software demo with a dropdown, a brief confirmation, a warning, and dollar amounts. OCR checks run when Tesseract and English language data are installed. To include the macOS `say` narration and quiet speech check, install the `mlx` extra and set `VIDEO_WALKTHROUGH_TEST_MODEL` to a local model directory before running the checks.
