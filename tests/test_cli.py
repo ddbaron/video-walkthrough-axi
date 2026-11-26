@@ -91,6 +91,11 @@ def test_inspect_cursor_and_markdown(demo):
         "inspect", bundle, "--from", 0, "--to", 10, "--cursor", page["next_cursor"], code=1
     )
     assert "Invalid cursor" in invalid["error"]
+    identity, _ = page["next_cursor"].split(":")
+    out_of_bounds = toon(
+        "inspect", bundle, "--from", 1, "--to", 10, "--cursor", f"{identity}:0", code=1
+    )
+    assert out_of_bounds["error"] == "Cursor offset is outside this time window."
     while page["next_cursor"]:
         page = toon(
             "inspect",

@@ -115,12 +115,11 @@ def screen_changes(samples: Iterable[Sample]) -> Iterator[Selection]:
         incoming = sample.frame.to_ndarray(format="rgb24")
         difference = grid.difference(incoming, pixels)
         adjacent_change = distinct(difference)
-        if not adjacent_change:
-            if anchor is not pixels:
-                difference = grid.difference(incoming, anchor)
-            if not distinct(difference):
-                last, pixels = sample, incoming
-                continue
+        if not adjacent_change and anchor is not pixels:
+            difference = grid.difference(incoming, anchor)
+        if not adjacent_change and not distinct(difference):
+            last, pixels = sample, incoming
+            continue
 
         held = sample.time >= start.time + MOTION_PAUSE_SECONDS
         excursion = False

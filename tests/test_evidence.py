@@ -38,6 +38,30 @@ def test_one_quiet_word_flags_loud_segment():
     assert "quiet-audio" in segment["flags"]
 
 
+def test_normalized_speech_flags_uncertain_and_untimed_words():
+    pcm = np.full(16000, 10000, dtype=np.int16)
+    raw = {
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 0.5,
+                "text": "hello",
+                "avg_logprob": -1.2,
+                "no_speech_prob": 0.9,
+                "words": [{"start": 0.1, "end": 0.4, "word": "hello", "probability": 0.2}],
+            },
+            {"start": 0.5, "end": 1.0, "text": "again"},
+        ]
+    }
+    uncertain, untimed = evidence.normalized_speech(raw, pcm)
+    assert uncertain["flags"] == [
+        "low-asr-confidence",
+        "possible-non-speech",
+        "low-word-confidence",
+    ]
+    assert untimed["flags"] == ["missing-word-timestamps"]
+
+
 @pytest.mark.parametrize(
     "change", ["replacement", "rollback", "intermediate-link", "ordinary-ancestor", "unrelated"]
 )

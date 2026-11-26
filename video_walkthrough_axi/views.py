@@ -60,6 +60,17 @@ def verify_screenshot(root: Path, frame: dict) -> None:
         raise EvidenceError(f"Bundle screenshot SHA-256 differs: {path}")
 
 
+def _cursor_offset(cursor: str | None, identity: str, window_size: int) -> int:
+    if cursor is None:
+        return 0
+    if not re.fullmatch(rf"{identity}:[0-9]{{1,10}}", cursor):
+        raise EvidenceError("Invalid cursor for this bundle, time window and filters.")
+    offset = int(cursor.split(":")[1])
+    if not 0 < offset < window_size:
+        raise EvidenceError("Cursor offset is outside this time window.")
+    return offset
+
+
 def inspect_window(
     root: Path,
     begin: float,
@@ -93,14 +104,7 @@ def inspect_window(
             f"{kind}:{min_delta}:{include_ocr}"
         ).encode()
     ).hexdigest()[:20]
-    offset = 0
-    if cursor is not None:
-        if not re.fullmatch(rf"{identity}:[0-9]{{1,10}}", cursor):
-            raise EvidenceError("Invalid cursor for this bundle, time window and filters.")
-        offset = int(cursor.split(":")[1])
-        if not 0 < offset < len(window):
-            raise EvidenceError("Cursor offset is outside this time window.")
-
+    offset = _cursor_offset(cursor, identity, len(window))
     events = window[offset : offset + limit]
     following = offset + len(events)
     frames = {event["path"]: event for event in timeline if event["kind"] == "frame"}

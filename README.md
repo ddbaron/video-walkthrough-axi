@@ -59,6 +59,17 @@ Bundles, terminal output, crops and derived drafts may contain private material.
 
 Distinct screens can be captured even when visible for one frame. The `single-frame` flag identifies those screenshots. The detector skips small, localized cursor-sized changes and compares retained candidates against the last emitted screenshot. It condenses short fades and bursts of large visual changes to the settled endpoint, with priority for held screens and brief excursions that return to the previous state. Sustained motion remains capped at three screenshots per recording second. When sustained motion is thinned, the latest retained motion screenshot carries the `extended-motion` reason and an `unsettled-screen` flag. Its change start follows the observed motion across seconds and resets after a held screen. Speech and OCR flags mark items to review, including quiet audio and low-confidence words.
 
-## Acceptance checks
+## Checks
 
-With FFmpeg on `PATH`, install the development tools with `python -m pip install -e '.[dev]'` and run `python -m pytest`. The tests generate a fictional software demo with a dropdown, a brief confirmation, a warning, and dollar amounts. OCR checks run when Tesseract and English language data are installed. To include the macOS `say` narration and quiet speech check, install the `mlx` extra and set `VIDEO_WALKTHROUGH_TEST_MODEL` to a local model directory before running the checks.
+With FFmpeg and FFprobe on `PATH`, run these commands from the repository root.
+
+```sh
+python -m pip install -e '.[dev]' 'ruff==0.17.4'
+python -m ruff check .
+python -m pytest
+python scripts/check_file_size.py
+```
+
+Ruff enforces a maximum function complexity of 10. The size check allows up to 999 non-blank, non-comment lines per tracked Python file.
+
+The tests generate a fictional software demo with a dropdown, a brief confirmation, a warning, and dollar amounts. OCR checks run when Tesseract and English language data are installed. To include the macOS `say` narration and quiet speech check, install the `mlx` extra and set `VIDEO_WALKTHROUGH_TEST_MODEL` to a local model directory before running the checks.

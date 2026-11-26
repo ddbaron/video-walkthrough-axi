@@ -143,6 +143,26 @@ def audio_pcm(source: Path, media: dict, wav: Path) -> np.ndarray:
         return np.frombuffer(stream.readframes(stream.getnframes()), dtype="<i2")
 
 
+def _speech_flags(words: list[dict], dbfs: float, logprob: float, no_speech: float) -> list[str]:
+    quiet = ASR_SETTINGS["quiet_dbfs"]
+    quiet_words = [
+        w["end"] - w["start"] >= ASR_SETTINGS["quiet_word_min_seconds"] and w["rms_dbfs"] < quiet
+        for w in words
+    ]
+    flags = []
+    if dbfs < quiet or any(quiet_words):
+        flags.append("quiet-audio")
+    if logprob < ASR_SETTINGS["low_logprob"]:
+        flags.append("low-asr-confidence")
+    if no_speech >= ASR_SETTINGS["no_speech_probability"]:
+        flags.append("possible-non-speech")
+    if any(w["probability"] < ASR_SETTINGS["low_word_probability"] for w in words):
+        flags.append("low-word-confidence")
+    if not words:
+        flags.append("missing-word-timestamps")
+    return flags
+
+
 def normalized_speech(raw: dict, pcm: np.ndarray) -> list[dict]:
     rate = ASR_SETTINGS["sample_rate"]
     duration = len(pcm) / rate
@@ -178,32 +198,15 @@ def normalized_speech(raw: dict, pcm: np.ndarray) -> list[dict]:
 
         words.sort(key=lambda w: w["start"])
         dbfs = signal_dbfs(start, end)
-        quiet = ASR_SETTINGS["quiet_dbfs"]
-        quiet_words = [
-            w["end"] - w["start"] >= ASR_SETTINGS["quiet_word_min_seconds"]
-            and w["rms_dbfs"] < quiet
-            for w in words
-        ]
         logprob = float(segment.get("avg_logprob", 0))
         no_speech = float(segment.get("no_speech_prob", 0))
-        flags = []
-        if dbfs < quiet or any(quiet_words):
-            flags.append("quiet-audio")
-        if logprob < ASR_SETTINGS["low_logprob"]:
-            flags.append("low-asr-confidence")
-        if no_speech >= ASR_SETTINGS["no_speech_probability"]:
-            flags.append("possible-non-speech")
-        if any(w["probability"] < ASR_SETTINGS["low_word_probability"] for w in words):
-            flags.append("low-word-confidence")
-        if not words:
-            flags.append("missing-word-timestamps")
         segments.append(
             {
                 "start": start,
                 "end": end,
                 "text": text,
                 "words": words,
-                "flags": flags,
+                "flags": _speech_flags(words, dbfs, logprob, no_speech),
                 "avg_logprob": logprob,
                 "no_speech_probability": no_speech,
                 "rms_dbfs": dbfs,

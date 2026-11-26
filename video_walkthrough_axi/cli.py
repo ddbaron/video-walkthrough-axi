@@ -183,9 +183,13 @@ def main() -> int:
     args = cli.parse_args()
     mask = os.umask(0o077)
     try:
-        if args.command in {"inspect", "contact-sheet"}:
-            if args.begin is not None and args.end is not None and args.end < args.begin:
-                raise EvidenceError("--to must be equal to or later than --from.")
+        if (
+            args.command in {"inspect", "contact-sheet"}
+            and args.begin is not None
+            and args.end is not None
+            and args.end < args.begin
+        ):
+            raise EvidenceError("--to must be equal to or later than --from.")
         match args.command:
             case "prepare":
                 output(
