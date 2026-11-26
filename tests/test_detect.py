@@ -136,9 +136,14 @@ def test_motion_onset_resets_after_held_screen():
     ):
         image = Image.new("RGB", (64, 48), (shade,) * 3)
         samples.append(Sample(tick / 10, av.VideoFrame.from_image(image)))
-    motion = [change for change in select_frames(samples) if change.reason == "extended-motion"]
-    assert [change.onset for change in motion] == [1.0, 2.3]
-    assert motion[-1].sample.time == 2.9
+    selected = list(select_frames(samples))
+    held = next(change for change in selected if change.reason == "settled-transition")
+    assert held.onset == 1.7
+    assert held.sample.time == 2.2
+    motion = selected[-1]
+    assert motion.reason == "extended-motion"
+    assert motion.onset == 2.3
+    assert motion.sample.time == 2.9
 
 
 def test_variable_rate_hold_resets_motion_onset():
@@ -148,5 +153,49 @@ def test_variable_rate_hold_resets_motion_onset():
         Sample(time, av.VideoFrame.from_image(Image.new("RGB", (64, 48), (shade,) * 3)))
         for time, shade in zip(times, shades, strict=True)
     ]
-    motion = [change for change in select_frames(samples) if change.reason == "extended-motion"]
-    assert [change.onset for change in motion] == [1.0, 2.0]
+    selections = list(select_frames(samples))
+    assert [change.sample.time for change in selections] == [0, 1.3, 2.3]
+    assert [change.reason for change in selections[1:]] == ["settled-transition"] * 2
+
+
+def test_cursor_sized_change_and_single_frame_popup():
+    baseline = screen("baseline")
+    cursor = baseline.copy()
+    ImageDraw.Draw(cursor).rectangle((10, 69, 23, 82), fill="#061526")
+    images = [baseline, cursor, baseline, screen("single-frame"), baseline]
+    samples = [
+        Sample(index / 24, av.VideoFrame.from_image(image)) for index, image in enumerate(images)
+    ]
+    opening, popup, reverted = select_frames(samples)
+    assert opening.sample is samples[0]
+    assert popup.sample is samples[3]
+    assert popup.flags == ("single-frame",)
+    assert reverted.sample is samples[4]
+
+
+@pytest.mark.parametrize("steps", (2, 5))
+def test_fade_across_second_boundary_emits_settled_endpoint(steps):
+    before, after = screen("baseline"), screen("brief-warning")
+    opening = Sample(0, av.VideoFrame.from_image(before))
+    samples = [opening]
+    for index in range(1, steps + 1):
+        blend = Image.blend(before, after, index / steps)
+        samples.append(Sample(0.96 + 0.03 * (index - 1), av.VideoFrame.from_image(blend)))
+    samples.append(Sample(1.2, av.VideoFrame.from_image(after)))
+
+    first, settled = select_frames(samples)
+    assert first.sample is opening
+    assert settled.sample is samples[-1]
+    assert settled.reason == "settled-transition"
+    assert settled.onset == samples[-2].time
+
+
+@pytest.mark.parametrize("start", (0.0, 0.93))
+def test_single_frame_popup_survives_fading_in_and_out(start):
+    before, popup = screen("baseline"), screen("brief-warning")
+    half = Image.blend(before, popup, 0.5)
+    samples = [
+        Sample(start + index / 24, av.VideoFrame.from_image(image))
+        for index, image in enumerate((before, half, popup, half, before))
+    ]
+    assert [change.sample for change in select_frames(samples)] == [samples[i] for i in (0, 2, 4)]

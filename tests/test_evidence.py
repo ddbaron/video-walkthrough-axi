@@ -116,7 +116,7 @@ def test_prepare_binds_ocr_data(demo, tmp_path, monkeypatch, change):
         assert len(list((bundle / "evidence").iterdir())) == 1
     else:
         assert not bundles.prepare(source, bundle, None, "auto")["cache_hit"]
-        page = toon("inspect", bundle, "--from", 0, "--to", 12)
+        page = toon("inspect", bundle, "--from", 0, "--to", 12, "--ocr", "on")
         assert page["events"]
         assert {event["ocr"] for event in page["events"]} == {"original"}
         assert bundles.prepare(source, bundle, None, "auto")["cache_hit"]
