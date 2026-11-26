@@ -61,11 +61,12 @@ Distinct screens can be captured even when visible for one frame. The `single-fr
 
 ## Checks
 
-With FFmpeg and FFprobe on `PATH`, run these commands from the repository root.
+Run these commands from the repository root. Put FFmpeg and FFprobe on `PATH` before running pytest.
 
 ```sh
-python -m pip install -e '.[dev]' 'ruff==0.17.4'
+python -m pip install 'ruff==0.17.4'
 python -m ruff check .
+python -m pip install -e '.[dev]'
 python -m pytest
 python scripts/check_file_size.py
 ```
