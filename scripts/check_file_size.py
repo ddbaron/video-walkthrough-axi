@@ -3,6 +3,7 @@
 import os
 import subprocess
 import tokenize
+from pathlib import Path
 
 
 def count_code_lines(path: str) -> int:
@@ -23,7 +24,7 @@ def main() -> int:
     tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "*.py"])
     failed = False
     for path in os.fsdecode(tracked).split("\0"):
-        if path and (count := count_code_lines(path)) > 999:
+        if Path(path).is_file() and (count := count_code_lines(path)) > 999:
             print(f"{path}: {count} code lines (limit: 999)")
             failed = True
     return int(failed)
