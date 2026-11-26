@@ -1,10 +1,13 @@
-"""Read bounded timeline windows and render a screenshot-led Markdown draft."""
+"""Read evidence summaries, timeline windows and visual previews."""
 
 import bisect
 import hashlib
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import quote
+
+from PIL import Image, ImageDraw
 
 from .bundle import event_time, load_timeline, local_artifact, read_manifest, screen_time
 from .media import EvidenceError, digest
@@ -16,37 +19,39 @@ def preview(text: str) -> tuple[str, bool]:
     return text[:TEXT_LIMIT], len(text) > TEXT_LIMIT
 
 
-def frame_preview(event: dict) -> dict:
-    ocr = event["ocr"]
-    text, truncated = preview(ocr["text"]) if ocr is not None else (None, False)
-    return {
-        "kind": "frame",
-        "time": event["time"],
-        "change_start": event["change_start"],
-        "path": event["path"],
-        "reason": event["reason"],
-        "speech": None,
-        "ocr": text,
-        "ocr_truncated": truncated,
-        "flags": event["flags"] + (ocr["flags"] if ocr is not None else []),
-    }
+def frame_index(event: dict) -> dict:
+    fields = ("time", "change_start", "path", "reason", "global_delta", "tile_delta", "flags")
+    return {field: event[field] for field in fields}
 
 
-def event_preview(event: dict) -> dict:
+def frame_preview(event: dict, include_ocr: bool) -> dict:
+    result = {"kind": "frame", **frame_index(event), "speech": None}
+    if include_ocr:
+        ocr = event.get("ocr")
+        text, truncated = preview(ocr["text"]) if ocr is not None else (None, False)
+        result.update(ocr=text, ocr_truncated=truncated)
+        if ocr is not None:
+            result["flags"] = event["flags"] + ocr["flags"]
+    return result
+
+
+def event_preview(event: dict, include_ocr: bool) -> dict:
     if event["kind"] == "frame":
-        return frame_preview(event)
+        return frame_preview(event, include_ocr)
     segment = event["speech"]
     text, truncated = preview(segment["text"])
-    return {
+    result = {
         "kind": "speech",
         "time": event["time"],
         "end": segment["end"],
         "preceding_frame": event["preceding_frame"],
         "speech": text,
         "speech_truncated": truncated,
-        "ocr": None,
         "flags": segment["flags"],
     }
+    if include_ocr:
+        result["ocr"] = None
+    return result
 
 
 def verify_screenshot(root: Path, frame: dict) -> None:
@@ -55,7 +60,17 @@ def verify_screenshot(root: Path, frame: dict) -> None:
         raise EvidenceError(f"Bundle screenshot SHA-256 differs: {path}")
 
 
-def inspect_window(root: Path, begin: float, end: float, limit: int, cursor: str | None) -> dict:
+def inspect_window(
+    root: Path,
+    begin: float,
+    end: float,
+    limit: int,
+    cursor: str | None,
+    *,
+    kind: str | None = None,
+    min_delta: float = 0.0,
+    include_ocr: bool = False,
+) -> dict:
     manifest = read_manifest(root)
     timeline = load_timeline(root, manifest)
     context = None
@@ -67,18 +82,21 @@ def inspect_window(root: Path, begin: float, end: float, limit: int, cursor: str
         if event["kind"] == "frame":
             if time < begin:
                 context = event
-            else:
+            elif kind != "speech" and event["global_delta"] >= min_delta:
                 window.append(event)
-        elif event["speech"]["end"] > begin:
+        elif kind != "frame" and event["speech"]["end"] > begin:
             window.append(event)
 
     identity = hashlib.sha256(
-        f"{manifest['artifacts']['timeline']['sha256']}:{begin}:{end}".encode()
+        (
+            f"{manifest['artifacts']['timeline']['sha256']}:{begin}:{end}:"
+            f"{kind}:{min_delta}:{include_ocr}"
+        ).encode()
     ).hexdigest()[:20]
     offset = 0
     if cursor is not None:
         if not re.fullmatch(rf"{identity}:[0-9]{{1,10}}", cursor):
-            raise EvidenceError("Invalid cursor for this bundle and time window.")
+            raise EvidenceError("Invalid cursor for this bundle, time window and filters.")
         offset = int(cursor.split(":")[1])
         if not 0 < offset < len(window):
             raise EvidenceError("Cursor offset is outside this time window.")
@@ -93,15 +111,110 @@ def inspect_window(root: Path, begin: float, end: float, limit: int, cursor: str
     for path in sorted(paths):
         verify_screenshot(root, frames[path])
     return {
-        "events": [event_preview(event) for event in events],
-        "preceding_screen": frame_preview(context) if context else None,
+        "events": [event_preview(event, include_ocr) for event in events],
+        "preceding_screen": frame_preview(context, include_ocr) if context else None,
         "from": begin,
         "to": end,
         "returned": len(events),
         "next_cursor": f"{identity}:{following}" if following < len(window) else None,
         "timeline": manifest["artifacts"]["timeline"]["path"],
-        "flags": manifest["flags"],
+        "flags": [flag for flag in manifest["flags"] if include_ocr or not flag.startswith("ocr-")],
     }
+
+
+def overview(root: Path) -> dict:
+    manifest = read_manifest(root)
+    timeline = load_timeline(root, manifest)
+    frames = []
+    speech = []
+    for event in timeline:
+        if event["kind"] == "frame":
+            frames.append({"index": len(frames) + 1, **frame_index(event)})
+            continue
+        segment = event["speech"]
+        flags = set(segment["flags"])
+        if "quiet-audio" in flags and flags & {"low-asr-confidence", "low-word-confidence"}:
+            if speech and "omitted_segments" in speech[-1]:
+                entry = speech[-1]
+                entry["end"] = max(entry["end"], segment["end"])
+                entry["omitted_segments"] += 1
+                entry["flags"] = sorted(set(entry["flags"]) | flags)
+            else:
+                speech.append(
+                    {
+                        "start": segment["start"],
+                        "end": segment["end"],
+                        "omitted_segments": 1,
+                        "flags": sorted(flags | {"likely-silence-hallucination"}),
+                    }
+                )
+        else:
+            text, truncated = preview(segment["text"])
+            speech.append(
+                {
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "text": text,
+                    "truncated": truncated,
+                    "flags": segment["flags"],
+                }
+            )
+    return {
+        "media": manifest["media"],
+        "flags": manifest["flags"],
+        "counts": {key: manifest["counts"][key] for key in ("frames", "speech_segments", "events")},
+        "transcript": manifest["artifacts"]["transcript"]["path"],
+        "speech": speech,
+        "frames": frames,
+    }
+
+
+def contact_sheet(root: Path, begin: float | None, end: float | None) -> dict:
+    manifest = read_manifest(root)
+    timeline = load_timeline(root, manifest)
+    frames = [event for event in timeline if event["kind"] == "frame"]
+    indexed = [
+        (index, frame)
+        for index, frame in enumerate(frames, 1)
+        if (begin is None or screen_time(frame) >= begin)
+        and (end is None or screen_time(frame) <= end)
+    ]
+    if not indexed:
+        return {"frames": 0, "sheets": []}
+
+    extracts = local_artifact(root, "extracts")
+    extracts.mkdir(mode=0o700, exist_ok=True)
+    generation = manifest["artifacts"]["timeline"]["sha256"][:16]
+    columns, per_page = 4, 20
+    width, height = 256, 170
+    sheets = []
+    with tempfile.TemporaryDirectory(prefix=".contact-sheet-", dir=extracts) as temporary:
+        for offset in range(0, len(indexed), per_page):
+            page = indexed[offset : offset + per_page]
+            first, last = page[0][0], page[-1][0]
+            filename = f"contact-sheet-{generation}-{first:06d}-{last:06d}.png"
+            rows = (len(page) + columns - 1) // columns
+            sheet = Image.new("RGB", (columns * width, rows * height), "#20252c")
+            draw = ImageDraw.Draw(sheet)
+            for cell, (index, frame) in enumerate(page):
+                verify_screenshot(root, frame)
+                with Image.open(local_artifact(root, frame["path"])) as thumbnail:
+                    thumbnail.thumbnail((width - 12, height - 29))
+                    x, y = cell % columns * width, cell // columns * height
+                    sheet.paste(thumbnail, (x + (width - thumbnail.width) // 2, y + 5))
+                draw.text(
+                    (x + 8, y + height - 20),
+                    f"{index:06d}  {timestamp(frame['time'])}",
+                    fill="white",
+                )
+            path = Path(temporary) / filename
+            path.touch(mode=0o600)
+            sheet.save(path)
+            sheets.append({"path": f"extracts/{filename}", "first": first, "last": last})
+        for sheet in sheets:
+            filename = Path(sheet["path"]).name
+            (Path(temporary) / filename).replace(extracts / filename)
+    return {"frames": len(indexed), "sheets": sheets}
 
 
 def timestamp(time: float) -> str:
@@ -149,7 +262,7 @@ def speech_lines(parts: list[tuple[str, list]]) -> list[str]:
     return lines
 
 
-def walkthrough(root: Path) -> str:
+def walkthrough(root: Path, *, include_ocr: bool = False) -> str:
     manifest = read_manifest(root)
     timeline = load_timeline(root, manifest)
     frames = [e for e in timeline if e["kind"] == "frame"]
@@ -184,10 +297,11 @@ def walkthrough(root: Path) -> str:
             "",
             *speech_lines(parts),
             "",
-            "**On-screen text**",
-            "",
         ]
-        ocr = frame["ocr"]
+        if not include_ocr:
+            continue
+        lines += ["**On-screen text**", ""]
+        ocr = frame.get("ocr")
         if ocr is None:
             lines.append("OCR unavailable for this frame.")
         elif not ocr["text"]:

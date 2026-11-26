@@ -9,6 +9,7 @@ def demo(tmp_path_factory):
     source = work / "synthetic demo.mp4"
     bundle = work / "bundle"
     make_recording(source)
-    summary = toon("prepare", source, "--out", bundle, "--ocr", "off")
+    summary = toon("prepare", source, "--out", bundle)
     assert summary["cache_hit"] is False
+    assert summary["ocr_frames"] == 0
     return source, bundle

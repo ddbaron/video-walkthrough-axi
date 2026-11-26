@@ -12,7 +12,7 @@ import toon_format
 from . import __version__
 from .bundle import extract_frame, prepare
 from .media import EvidenceError
-from .views import inspect_window, walkthrough
+from .views import contact_sheet, inspect_window, overview, walkthrough
 
 
 def output(values: dict) -> None:
@@ -67,6 +67,27 @@ def parse_limit(value: str) -> int:
         raise argparse.ArgumentTypeError("use a result limit between 1 and 100") from error
 
 
+def parse_delta(value: str) -> float:
+    try:
+        result = float(value)
+        if 0 <= result <= 1:
+            return result or 0.0
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("use a changed-pixel fraction between 0 and 1")
+
+
+def add_view_ocr(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--ocr",
+        choices=("on", "off"),
+        nargs="?",
+        const="on",
+        default="off",
+        help="include stored OCR when on (default: off)",
+    )
+
+
 def parser() -> EvidenceParser:
     main = EvidenceParser(
         prog="video-walkthrough-axi",
@@ -92,8 +113,8 @@ def parser() -> EvidenceParser:
     setup.add_argument(
         "--ocr",
         choices=("auto", "off"),
-        default="auto",
-        help="auto uses Tesseract when installed (default: auto)",
+        default="off",
+        help="auto uses Tesseract when installed (default: off)",
     )
 
     inspect = commands.add_parser(
@@ -105,13 +126,44 @@ def parser() -> EvidenceParser:
     inspect.add_argument("--from", dest="begin", required=True, type=parse_time, metavar="TIME")
     inspect.add_argument("--to", dest="end", required=True, type=parse_time, metavar="TIME")
     inspect.add_argument("--limit", type=parse_limit, default=20, help="events per page (1–100)")
-    inspect.add_argument("--cursor", help="continue using the previous next_cursor")
+    inspect.add_argument("--cursor", help="continue using the same window and filters")
+    inspect.add_argument("--kind", choices=("frame", "speech"), help="return only this event kind")
+    inspect.add_argument(
+        "--min-delta",
+        type=parse_delta,
+        metavar="FRACTION",
+        default=0.0,
+        help="minimum fraction of changed screen pixels for frame events (0–1)",
+    )
+    add_view_ocr(inspect)
+
+    summary = commands.add_parser(
+        "overview",
+        help="summarize recording metadata, speech and frames",
+        allow_abbrev=False,
+    )
+    summary.description = "Summarize the recording and group likely silence hallucinations."
+    summary.add_argument("bundle", type=Path, metavar="BUNDLE")
+
+    sheets = commands.add_parser(
+        "contact-sheet",
+        help="save labeled thumbnail grids under bundle extracts",
+        allow_abbrev=False,
+    )
+    sheets.add_argument("bundle", type=Path, metavar="BUNDLE")
+    sheets.add_argument(
+        "--from", dest="begin", type=parse_time, metavar="TIME", help="first screen time to include"
+    )
+    sheets.add_argument(
+        "--to", dest="end", type=parse_time, metavar="TIME", help="last screen time to include"
+    )
 
     frame = commands.add_parser(
         "frame",
         help="extract a native screenshot from the original source",
         allow_abbrev=False,
     )
+    frame.description = "Save a timestamped PNG with a path relative to the bundle."
     frame.add_argument("bundle", type=Path, metavar="BUNDLE")
     frame.add_argument("--at", required=True, type=parse_time, metavar="TIME")
     frame.add_argument("--crop", type=parse_crop, metavar="X,Y,W,H", help="source pixel rectangle")
@@ -122,6 +174,7 @@ def parser() -> EvidenceParser:
         allow_abbrev=False,
     )
     draft.add_argument("bundle", type=Path, metavar="BUNDLE")
+    add_view_ocr(draft)
     return main
 
 
@@ -130,6 +183,9 @@ def main() -> int:
     args = cli.parse_args()
     mask = os.umask(0o077)
     try:
+        if args.command in {"inspect", "contact-sheet"}:
+            if args.begin is not None and args.end is not None and args.end < args.begin:
+                raise EvidenceError("--to must be equal to or later than --from.")
         match args.command:
             case "prepare":
                 output(
@@ -141,8 +197,6 @@ def main() -> int:
                     )
                 )
             case "inspect":
-                if args.end < args.begin:
-                    raise EvidenceError("--to must be equal to or later than --from.")
                 output(
                     inspect_window(
                         args.bundle.resolve(),
@@ -150,12 +204,19 @@ def main() -> int:
                         args.end,
                         args.limit,
                         args.cursor,
+                        kind=args.kind,
+                        min_delta=args.min_delta,
+                        include_ocr=args.ocr == "on",
                     )
                 )
+            case "overview":
+                output(overview(args.bundle.resolve()))
+            case "contact-sheet":
+                output(contact_sheet(args.bundle.resolve(), args.begin, args.end))
             case "frame":
                 output(extract_frame(args.bundle.resolve(), args.at, args.crop))
             case "walkthrough":
-                print(walkthrough(args.bundle.resolve()), end="")
+                print(walkthrough(args.bundle.resolve(), include_ocr=args.ocr == "on"), end="")
     except (EvidenceError, OSError, ValueError, KeyError, av.FFmpegError) as error:
         if isinstance(error, BrokenPipeError):
             return 1

@@ -4,7 +4,6 @@ import bisect
 import fcntl
 import hashlib
 import json
-import os
 import shutil
 import tempfile
 from contextlib import contextmanager
@@ -27,11 +26,14 @@ from .media import (
     verify_png,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
-def write_json(path: Path, data: object) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+def write_json(path: Path, data: object, *, indent: int | None = None) -> None:
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, allow_nan=False, indent=indent) + "\n",
+        encoding="utf-8",
+    )
 
 
 def read_json(path: Path):
@@ -47,8 +49,8 @@ def local_artifact(root: Path, relative: str) -> Path:
 
 def read_manifest(root: Path) -> dict:
     manifest = read_json(root / "manifest.json")
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION:
-        raise EvidenceError(f"Expected evidence manifest schema version {SCHEMA_VERSION}.")
+    if not isinstance(manifest, dict) or manifest.get("schema_version") not in (1, SCHEMA_VERSION):
+        raise EvidenceError(f"Expected evidence manifest schema version 1 or {SCHEMA_VERSION}.")
     return manifest
 
 
@@ -74,14 +76,15 @@ def source_snapshot(source: Path, root: Path):
 def activate(root: Path, manifest: dict) -> None:
     with tempfile.TemporaryDirectory(prefix=".publish-", dir=root) as tmp:
         staged = Path(tmp) / "manifest.json"
-        write_json(staged, manifest)
+        write_json(staged, manifest, indent=2)
         staged.replace(root / "manifest.json")
 
 
-def evidence_files(manifest: dict):
-    yield from manifest["artifacts"].values()
-    for frame in manifest["frames"]:
-        yield {"path": frame["path"], "sha256": frame["sha256"]}
+def evidence_files(root: Path, manifest: dict):
+    for name, artifact in manifest["artifacts"].items():
+        if name != "timeline":
+            yield artifact
+    yield from (event for event in load_timeline(root, manifest) if event["kind"] == "frame")
 
 
 def cached_manifest(root: Path, evidence: Path, cache_key: str) -> dict | None:
@@ -94,7 +97,7 @@ def cached_manifest(root: Path, evidence: Path, cache_key: str) -> dict | None:
                 continue
             if all(
                 digest(local_artifact(root, item["path"])) == item["sha256"]
-                for item in evidence_files(manifest)
+                for item in evidence_files(root, manifest)
             ):
                 return manifest
         except (OSError, ValueError, KeyError, TypeError, EvidenceError):
@@ -152,15 +155,15 @@ def build(staging: Path, name: str, source: Path, manifest: dict, backend_dir: P
 
     transcript = transcribe(source, media, backend_dir, staging / "audio.tmp.wav")
     ocr = screen_text(paths, backend_dir if settings["ocr"] is not None else None)
-    timeline = merge(
-        [dict(frame, ocr=text) for frame, text in zip(frames, ocr, strict=True)], transcript
-    )
+    for frame, text in zip(frames, ocr, strict=True):
+        if text is not None:
+            frame["ocr"] = text
+    timeline = merge(frames, transcript)
     manifest["flags"] = list(transcript["flags"])
     if settings["ocr"] is None:
         manifest["flags"].append(
             "ocr-disabled" if settings["ocr_request"] == "off" else "ocr-unavailable"
         )
-    manifest["frames"] = frames
     manifest["counts"] = {
         "frames": len(frames),
         "speech_segments": len(transcript["segments"]),
@@ -177,7 +180,7 @@ def build(staging: Path, name: str, source: Path, manifest: dict, backend_dir: P
         manifest["artifacts"][key] = {"path": f"{prefix}/{path.name}", "sha256": digest(path)}
 
 
-def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
+def prepare(source: Path, root: Path, model: Path | None, ocr: str = "off") -> dict:
     if not source.is_file():
         raise EvidenceError("Provide a regular, local recording file.")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -228,7 +231,7 @@ def prepare(source: Path, root: Path, model: Path | None, ocr: str) -> dict:
                 if backend_config(media, model, ocr) != (settings, evidence_backends, inputs):
                     raise EvidenceError("Speech or OCR backend inputs changed during processing.")
                 ensure_unchanged(source, signature)
-                write_json(staging / "manifest.json", manifest)
+                write_json(staging / "manifest.json", manifest, indent=2)
                 staging.rename(evidence / name)
         ensure_unchanged(source, signature)
         activate(root, manifest)
@@ -255,18 +258,18 @@ def extract_frame(root: Path, at: float, crop: tuple | None) -> dict:
         ensure_unchanged(source, signature)
     output = local_artifact(root, "extracts")
     output.mkdir(mode=0o700, exist_ok=True)
-    fd, filename = tempfile.mkstemp(dir=output, prefix="frame-", suffix=".png")
-    os.close(fd)
-    path = Path(filename)
+    region = "-crop-" + "-".join(map(str, crop)) if crop is not None else ""
+    filename = f"frame-{sample.time:.9f}s-{sha[:16]}{region}.png"
+    relative = f"extracts/{filename}"
     size = crop[2:] if crop is not None else (sample.frame.width, sample.frame.height)
-    try:
+    with tempfile.TemporaryDirectory(prefix=".frame-", dir=output) as temporary:
+        path = Path(temporary) / "frame.png"
+        path.touch(mode=0o600)
         sample.save(path, crop)
         verify_png(path, size)
-    except BaseException:
-        path.unlink()
-        raise
+        path.replace(output / filename)
     return {
-        "path": str(path),
+        "path": relative,
         "requested_time": at,
         "time": sample.time,
         "pts": sample.frame.pts,

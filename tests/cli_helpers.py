@@ -21,3 +21,9 @@ def toon(*args, code=0):
 
 def manifest_of(bundle):
     return json.loads((bundle / "manifest.json").read_text())
+
+
+def frames_of(bundle):
+    manifest = manifest_of(bundle)
+    timeline = json.loads((bundle / manifest["artifacts"]["timeline"]["path"]).read_text())
+    return [event for event in timeline if event["kind"] == "frame"]
